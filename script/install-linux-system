@@ -6,7 +6,7 @@ usage() {
   cat <<EOF
 Usage: ${0##*/}
 
-Builds Zed in release mode and installs it system-wide:
+Builds Zed in release mode as the stable channel and installs it system-wide:
 
   \$PREFIX/bin/zed              CLI (default: /usr/bin/zed)
   \$PREFIX/lib/zed/zed-editor   Editor binary
@@ -14,8 +14,9 @@ Builds Zed in release mode and installs it system-wide:
   \$PREFIX/share/icons/         App icons
 
 Environment:
-  PREFIX   Install prefix (default: /usr)
-  SUDO     Privilege helper (default: sudo)
+  PREFIX               Install prefix (default: /usr)
+  SUDO                 Privilege helper (default: sudo)
+  ZED_RELEASE_CHANNEL  Channel baked into the binary (default: stable)
 
 Before running this you should ensure you have all the build dependencies
 installed with \`./script/linux\`.
@@ -32,6 +33,8 @@ cd "$root"
 
 PREFIX="${PREFIX:-/usr}"
 SUDO="${SUDO:-sudo}"
+channel="${ZED_RELEASE_CHANNEL:-stable}"
+export ZED_RELEASE_CHANNEL="$channel"
 
 if ! command -v cargo >/dev/null 2>&1; then
   if [[ -f "${HOME}/.cargo/env" ]]; then
@@ -50,7 +53,15 @@ if ! command -v "$SUDO" >/dev/null 2>&1; then
   exit 1
 fi
 
-channel="$(<crates/zed/RELEASE_CHANNEL)"
+case "$channel" in
+  stable | preview | nightly | dev) ;;
+  *)
+    echo "error: invalid ZED_RELEASE_CHANNEL '${channel}'" >&2
+    echo "expected one of: stable, preview, nightly, dev" >&2
+    exit 1
+    ;;
+esac
+
 version="$(script/get-crate-version zed)"
 export RELEASE_VERSION="${version}"
 export ZED_UPDATE_EXPLANATION="Rebuild with ${root}/script/install-linux-system"
@@ -90,11 +101,21 @@ case "$channel" in
     app_id="dev.zed.Zed-Dev"
     app_name="Zed Devel"
     ;;
-  *)
-    app_id="dev.zed.Zed"
-    app_name="Zed"
-    ;;
 esac
+
+icon_src="crates/zed/resources/app-icon${suffix}.png"
+icon_src_2x="crates/zed/resources/app-icon${suffix}@2x.png"
+icon_dst_512="${PREFIX}/share/icons/hicolor/512x512/apps/zed.png"
+icon_dst_1024="${PREFIX}/share/icons/hicolor/1024x1024/apps/zed.png"
+# Also install under the app id name some launchers resolve more reliably.
+icon_dst_512_app_id="${PREFIX}/share/icons/hicolor/512x512/apps/${app_id}.png"
+
+if [[ ! -f "$icon_src" || ! -f "$icon_src_2x" ]]; then
+  echo "error: missing icon assets for channel '${channel}':" >&2
+  echo "  ${icon_src}" >&2
+  echo "  ${icon_src_2x}" >&2
+  exit 1
+fi
 
 temp_dir="$(mktemp -d)"
 trap 'rm -rf "$temp_dir"' EXIT
@@ -102,7 +123,8 @@ trap 'rm -rf "$temp_dir"' EXIT
 desktop_file="${temp_dir}/${app_id}.desktop"
 export DO_STARTUP_NOTIFY="true"
 export APP_CLI="zed"
-export APP_ICON="zed"
+# Absolute path so the launcher shows the icon even before icon caches refresh.
+export APP_ICON="$icon_dst_512"
 export APP_ARGS="%U"
 export APP_NAME="$app_name"
 envsubst <"crates/zed/resources/zed.desktop.in" >"$desktop_file"
@@ -112,15 +134,30 @@ echo "==> Installing into ${PREFIX} (requires privileges)"
 "$SUDO" install -Dm755 "$cli_bin" "${PREFIX}/bin/zed"
 "$SUDO" install -Dm755 "$editor_bin" "${PREFIX}/lib/zed/zed-editor"
 "$SUDO" install -Dm755 "$desktop_file" "${PREFIX}/share/applications/${app_id}.desktop"
-"$SUDO" install -Dm644 "crates/zed/resources/app-icon${suffix}.png" \
-  "${PREFIX}/share/icons/hicolor/512x512/apps/zed.png"
-"$SUDO" install -Dm644 "crates/zed/resources/app-icon${suffix}@2x.png" \
-  "${PREFIX}/share/icons/hicolor/1024x1024/apps/zed.png"
+"$SUDO" install -Dm644 "$icon_src" "$icon_dst_512"
+"$SUDO" install -Dm644 "$icon_src" "$icon_dst_512_app_id"
+"$SUDO" install -Dm644 "$icon_src_2x" "$icon_dst_1024"
+
+# Remove desktop entries left over from other channels so only one shortcut remains.
+for stale_id in dev.zed.Zed dev.zed.Zed-Dev dev.zed.Zed-Preview dev.zed.Zed-Nightly; do
+  if [[ "$stale_id" != "$app_id" ]]; then
+    "$SUDO" rm -f "${PREFIX}/share/applications/${stale_id}.desktop"
+  fi
+done
+
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  "$SUDO" gtk-update-icon-cache -f "${PREFIX}/share/icons/hicolor" >/dev/null 2>&1 || true
+fi
+if command -v update-desktop-database >/dev/null 2>&1; then
+  "$SUDO" update-desktop-database "${PREFIX}/share/applications" >/dev/null 2>&1 || true
+fi
 
 echo
 echo "Installed:"
 echo "  ${PREFIX}/bin/zed"
 echo "  ${PREFIX}/lib/zed/zed-editor"
 echo "  ${PREFIX}/share/applications/${app_id}.desktop"
+echo "  ${icon_dst_512}"
 echo
+echo "Verify with: zed --version"
 echo "Run with: zed"
