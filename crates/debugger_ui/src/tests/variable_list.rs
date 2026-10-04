@@ -14,7 +14,7 @@ use crate::{
 };
 use collections::HashMap;
 use dap::{
-    Scope, StackFrame, Variable,
+    ErrorResponse, Scope, StackFrame, Variable,
     requests::{Evaluate, Initialize, Launch, Scopes, StackTrace, Variables},
 };
 use gpui::{BackgroundExecutor, TestAppContext, VisualTestContext};
@@ -2590,6 +2590,39 @@ async fn test_refresh_watchers(executor: BackgroundExecutor, cx: &mut TestAppCon
         assert_eq!("value updated", watcher.value.to_string());
         assert_eq!("variable1", watcher.expression.to_string());
         assert_eq!(3, watcher.variables_reference);
+    });
+
+    client.on_request::<Evaluate, _>({
+        move |_, args| {
+            assert_eq!("variable1", args.expression);
+
+            Err(ErrorResponse { error: None })
+        }
+    });
+
+    client
+        .fake_event(dap::messages::Events::Stopped(dap::StoppedEvent {
+            reason: dap::StoppedEventReason::Pause,
+            description: None,
+            thread_id: Some(1),
+            preserve_focus_hint: None,
+            text: None,
+            all_threads_stopped: None,
+            hit_breakpoint_ids: None,
+        }))
+        .await;
+
+    cx.run_until_parked();
+
+    session.update(cx, |session, _| {
+        let watcher = session
+            .watchers()
+            .get(&SharedString::from("variable1"))
+            .unwrap();
+
+        assert_eq!("undefined", watcher.value.to_string());
+        assert_eq!("variable1", watcher.expression.to_string());
+        assert_eq!(0, watcher.variables_reference);
     });
 }
 

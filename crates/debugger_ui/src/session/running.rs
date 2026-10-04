@@ -99,10 +99,6 @@ impl RunningState {
     pub(crate) fn active_pane(&self) -> &Entity<Pane> {
         &self.active_pane
     }
-
-    pub(crate) fn workspace(&self) -> &WeakEntity<Workspace> {
-        &self.workspace
-    }
 }
 
 impl Render for RunningState {

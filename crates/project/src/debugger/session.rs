@@ -2677,18 +2677,30 @@ impl Session {
         });
 
         cx.spawn(async move |this, cx| {
-            let response = request.await?;
-
-            this.update(cx, |session, cx| {
-                session.watchers.insert(
-                    expression.clone(),
+            let watcher = match request.await {
+                Ok(response) => {
+                    let value = if response.result.is_empty() {
+                        SharedString::new_static("undefined")
+                    } else {
+                        response.result.into()
+                    };
                     Watcher {
-                        expression,
-                        value: response.result.into(),
+                        expression: expression.clone(),
+                        value,
                         variables_reference: response.variables_reference,
                         presentation_hint: response.presentation_hint,
-                    },
-                );
+                    }
+                }
+                Err(_) => Watcher {
+                    expression: expression.clone(),
+                    value: SharedString::new_static("undefined"),
+                    variables_reference: 0,
+                    presentation_hint: None,
+                },
+            };
+
+            this.update(cx, |session, cx| {
+                session.watchers.insert(expression, watcher);
                 cx.emit(SessionEvent::Watchers);
             })
         })

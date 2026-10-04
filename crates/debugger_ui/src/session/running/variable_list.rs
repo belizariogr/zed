@@ -8,8 +8,8 @@ use dap::{
 use editor::Editor;
 use gpui::{
     Action, AnyElement, ClickEvent, ClipboardItem, Context, DismissEvent, Empty, Entity,
-    EventEmitter, FocusHandle, Focusable, Hsla, MouseDownEvent, Point, Subscription, TaskExt,
-    TextStyleRefinement, UniformListScrollHandle, WeakEntity, actions, anchored, deferred, rems,
+    FocusHandle, Focusable, Hsla, MouseDownEvent, Point, Subscription, TaskExt,
+    TextStyleRefinement, UniformListScrollHandle, WeakEntity, actions, anchored, deferred,
     uniform_list,
 };
 use itertools::Itertools;
@@ -21,7 +21,6 @@ use project::debugger::{
 use std::{collections::HashMap, ops::Range, sync::Arc};
 use ui::{ContextMenu, ListItem, ScrollAxes, ScrollableHandle, Tooltip, WithScrollbar, prelude::*};
 use util::{debug_panic, maybe};
-use workspace::ModalView;
 
 static INDENT_STEP_SIZE: Pixels = px(10.0);
 
@@ -201,6 +200,7 @@ pub struct VariableList {
     open_context_menu: Option<(Entity<ContextMenu>, Point<Pixels>, Subscription)>,
     focus_handle: FocusHandle,
     edited_path: Option<(EntryPath, Entity<Editor>)>,
+    add_watch_editor: Option<Entity<Editor>>,
     disabled: bool,
     memory_view: Entity<MemoryView>,
     weak_running: WeakEntity<RunningState>,
@@ -224,12 +224,14 @@ impl VariableList {
                 SessionEvent::HistoricSnapshotSelected => {
                     this.selection.take();
                     this.edited_path.take();
+                    this.add_watch_editor.take();
                     this.selected_stack_frame_id.take();
                     this.build_entries(cx);
                 }
                 SessionEvent::Stopped { .. } => {
                     this.selection.take();
                     this.edited_path.take();
+                    this.add_watch_editor.take();
                     this.selected_stack_frame_id.take();
                 }
                 SessionEvent::Variables | SessionEvent::Watchers => {
@@ -237,8 +239,14 @@ impl VariableList {
                 }
                 _ => {}
             }),
-            cx.on_focus_out(&focus_handle, window, |this, _, _, cx| {
+            cx.on_focus_out(&focus_handle, window, |this, _, window, cx| {
                 this.edited_path.take();
+                let add_watch_focused = this.add_watch_editor.as_ref().is_some_and(|editor| {
+                    editor.focus_handle(cx).contains_focused(window, cx)
+                });
+                if !add_watch_focused {
+                    this.add_watch_editor.take();
+                }
                 cx.notify();
             }),
         ];
@@ -255,6 +263,7 @@ impl VariableList {
             open_context_menu: None,
             disabled: false,
             edited_path: None,
+            add_watch_editor: None,
             entries: Default::default(),
             max_width_index: None,
             entry_states: Default::default(),
@@ -534,12 +543,26 @@ impl VariableList {
     }
 
     fn cancel(&mut self, _: &menu::Cancel, window: &mut Window, cx: &mut Context<Self>) {
+        self.add_watch_editor.take();
         self.edited_path.take();
         self.focus_handle.focus(window, cx);
         cx.notify();
     }
 
-    fn confirm(&mut self, _: &menu::Confirm, _window: &mut Window, cx: &mut Context<Self>) {
+    fn confirm(&mut self, _: &menu::Confirm, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.add_watch_editor.take() {
+            let expression = editor.read(cx).text(cx);
+            let expression = expression.trim();
+            if !expression.is_empty()
+                && let Some(stack_frame_id) = self.selected_stack_frame_id
+            {
+                self.add_watcher_expression(expression.to_owned().into(), stack_frame_id, cx);
+            }
+            self.focus_handle.focus(window, cx);
+            cx.notify();
+            return;
+        }
+
         if let Some((var_path, editor)) = self.edited_path.take() {
             let Some(state) = self.entry_states.get(&var_path) else {
                 return;
@@ -985,27 +1008,25 @@ impl VariableList {
     }
 
     fn open_add_watch_expression_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(stack_frame_id) = self.selected_stack_frame_id else {
+        if self.selected_stack_frame_id.is_none() || self.disabled {
             return;
-        };
+        }
 
-        let Ok(workspace) = self
-            .weak_running
-            .read_with(cx, |running, _| running.workspace().clone())
-        else {
+        if self.add_watch_editor.is_some() {
+            if let Some(editor) = self.add_watch_editor.as_ref() {
+                editor.focus_handle(cx).focus(window, cx);
+            }
             return;
-        };
+        }
 
-        let Some(workspace) = workspace.upgrade() else {
-            return;
-        };
-
-        let variable_list = cx.weak_entity();
-        workspace.update(cx, |workspace, cx| {
-            workspace.toggle_modal(window, cx, |window, cx| {
-                AddWatchModal::new(variable_list, stack_frame_id, window, cx)
-            });
+        let editor = cx.new(|cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_placeholder_text("Expression to watch", window, cx);
+            editor
         });
+        editor.focus_handle(cx).focus(window, cx);
+        self.add_watch_editor = Some(editor);
+        cx.notify();
     }
 
     fn add_watcher_expression(
@@ -1193,64 +1214,70 @@ impl VariableList {
         value: String,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if !value.is_empty() {
-            div()
-                .w_full()
-                .id(entry.item_value_id())
-                .map(|this| {
-                    if let Some((_, editor)) = self
-                        .edited_path
-                        .as_ref()
-                        .filter(|(path, _)| path == &entry.path)
-                    {
-                        this.child(div().size_full().px_2().child(editor.clone()))
-                    } else {
-                        this.text_color(cx.theme().colors().text_muted)
-                            .when(
-                                !self.disabled
-                                    && self
-                                        .session
-                                        .read(cx)
-                                        .capabilities()
-                                        .supports_set_variable
-                                        .unwrap_or_default(),
-                                |this| {
-                                    let path = entry.path.clone();
-                                    let variable_value = value.clone();
-                                    this.on_click(cx.listener(
-                                        move |this, click: &ClickEvent, window, cx| {
-                                            if click.click_count() < 2 {
-                                                return;
-                                            }
-                                            let editor = Self::create_variable_editor(
-                                                &variable_value,
-                                                window,
-                                                cx,
-                                            );
-                                            this.edited_path = Some((path.clone(), editor));
-
-                                            cx.notify();
-                                        },
-                                    ))
-                                },
-                            )
-                            .child(
-                                Label::new(format!("=  {value}"))
-                                    .single_line()
-                                    .truncate()
-                                    .size(LabelSize::Small)
-                                    .color(Color::Muted)
-                                    .when_some(variable_color.value, |this, color| {
-                                        this.color(Color::from(color))
-                                    }),
-                            )
-                            .tooltip(Tooltip::text(value))
-                    }
-                })
-                .into_any_element()
-        } else {
-            Empty.into_any_element()
+        if value.is_empty() {
+            return Empty.into_any_element();
         }
+
+        let is_undefined = value == "undefined";
+
+        div()
+            .w_full()
+            .id(entry.item_value_id())
+            .map(|this| {
+                if let Some((_, editor)) = self
+                    .edited_path
+                    .as_ref()
+                    .filter(|(path, _)| path == &entry.path)
+                {
+                    this.child(div().size_full().px_2().child(editor.clone()))
+                } else {
+                    this.text_color(cx.theme().colors().text_muted)
+                        .when(
+                            !self.disabled
+                                && !is_undefined
+                                && self
+                                    .session
+                                    .read(cx)
+                                    .capabilities()
+                                    .supports_set_variable
+                                    .unwrap_or_default(),
+                            |this| {
+                                let path = entry.path.clone();
+                                let variable_value = value.clone();
+                                this.on_click(cx.listener(
+                                    move |this, click: &ClickEvent, window, cx| {
+                                        if click.click_count() < 2 {
+                                            return;
+                                        }
+                                        let editor = Self::create_variable_editor(
+                                            &variable_value,
+                                            window,
+                                            cx,
+                                        );
+                                        this.edited_path = Some((path.clone(), editor));
+
+                                        cx.notify();
+                                    },
+                                ))
+                            },
+                        )
+                        .child(
+                            Label::new(format!("=  {value}"))
+                                .single_line()
+                                .truncate()
+                                .size(LabelSize::Small)
+                                .when(is_undefined, |this| this.color(Color::Disabled))
+                                .when(!is_undefined, |this| {
+                                    this.color(Color::Muted).when_some(
+                                        variable_color.value,
+                                        |this, color| this.color(Color::from(color)),
+                                    )
+                                }),
+                        )
+                        .tooltip(Tooltip::text(value))
+                }
+            })
+            .into_any_element()
     }
 
     fn center_truncate_string(s: &str, mut max_chars: usize) -> String {
@@ -1673,6 +1700,25 @@ impl Render for VariableList {
             .on_action(cx.listener(Self::remove_watcher))
             .on_action(cx.listener(Self::toggle_data_breakpoint))
             .on_action(cx.listener(Self::jump_to_variable_memory))
+            .when_some(self.add_watch_editor.clone(), |this, editor| {
+                this.child(
+                    v_flex()
+                        .w_full()
+                        .px_2()
+                        .py_1()
+                        .gap_1()
+                        .border_b_1()
+                        .border_color(cx.theme().colors().border_variant)
+                        .on_action(cx.listener(Self::confirm))
+                        .on_action(cx.listener(Self::cancel))
+                        .child(
+                            Label::new("Add Watch Expression")
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .child(editor),
+                )
+            })
             .child(
                 uniform_list(
                     "variable-list",
@@ -1707,84 +1753,6 @@ impl Render for VariableList {
                 window,
                 cx,
             )
-    }
-}
-
-struct AddWatchModal {
-    editor: Entity<Editor>,
-    variable_list: WeakEntity<VariableList>,
-    stack_frame_id: StackFrameId,
-}
-
-impl AddWatchModal {
-    fn new(
-        variable_list: WeakEntity<VariableList>,
-        stack_frame_id: StackFrameId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let editor = cx.new(|cx| {
-            let mut editor = Editor::single_line(window, cx);
-            editor.set_placeholder_text("Expression to watch", window, cx);
-            editor
-        });
-        editor.focus_handle(cx).focus(window, cx);
-        Self {
-            editor,
-            variable_list,
-            stack_frame_id,
-        }
-    }
-
-    fn cancel(&mut self, _: &menu::Cancel, _window: &mut Window, cx: &mut Context<Self>) {
-        cx.emit(DismissEvent);
-    }
-
-    fn confirm(&mut self, _: &menu::Confirm, _window: &mut Window, cx: &mut Context<Self>) {
-        let expression = self.editor.read(cx).text(cx);
-        let expression = expression.trim();
-        if expression.is_empty() {
-            return;
-        }
-
-        let expression: SharedString = expression.to_owned().into();
-        let stack_frame_id = self.stack_frame_id;
-        self.variable_list
-            .update(cx, |variable_list, cx| {
-                variable_list.add_watcher_expression(expression, stack_frame_id, cx);
-            })
-            .ok();
-        cx.emit(DismissEvent);
-    }
-}
-
-impl EventEmitter<DismissEvent> for AddWatchModal {}
-impl ModalView for AddWatchModal {}
-impl Focusable for AddWatchModal {
-    fn focus_handle(&self, cx: &App) -> FocusHandle {
-        self.editor.focus_handle(cx)
-    }
-}
-
-impl Render for AddWatchModal {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .key_context("AddWatchModal")
-            .on_action(cx.listener(Self::cancel))
-            .on_action(cx.listener(Self::confirm))
-            .elevation_2(cx)
-            .w(rems(34.))
-            .child(
-                h_flex()
-                    .px_3()
-                    .pt_2()
-                    .pb_1()
-                    .w_full()
-                    .gap_1p5()
-                    .child(Icon::new(IconName::Plus).size(IconSize::XSmall))
-                    .child(Headline::new("Add Watch Expression").size(HeadlineSize::XSmall)),
-            )
-            .child(div().px_3().pb_3().w_full().child(self.editor.clone()))
     }
 }
 
