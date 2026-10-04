@@ -8,8 +8,8 @@ use dap::{
 use editor::Editor;
 use gpui::{
     Action, AnyElement, ClickEvent, ClipboardItem, Context, DismissEvent, Empty, Entity,
-    FocusHandle, Focusable, Hsla, MouseDownEvent, Point, Subscription, TaskExt,
-    TextStyleRefinement, UniformListScrollHandle, WeakEntity, actions, anchored, deferred,
+    EventEmitter, FocusHandle, Focusable, Hsla, MouseDownEvent, Point, Subscription, TaskExt,
+    TextStyleRefinement, UniformListScrollHandle, WeakEntity, actions, anchored, deferred, rems,
     uniform_list,
 };
 use itertools::Itertools;
@@ -21,6 +21,7 @@ use project::debugger::{
 use std::{collections::HashMap, ops::Range, sync::Arc};
 use ui::{ContextMenu, ListItem, ScrollAxes, ScrollableHandle, Tooltip, WithScrollbar, prelude::*};
 use util::{debug_panic, maybe};
+use workspace::ModalView;
 
 static INDENT_STEP_SIZE: Pixels = px(10.0);
 
@@ -39,6 +40,8 @@ actions!(
         EditVariable,
         /// Adds the selected variable to the watch list.
         AddWatch,
+        /// Opens a dialog to add a watch expression.
+        AddWatchExpression,
         /// Removes the selected variable from the watch list.
         RemoveWatch,
         /// Jump to variable's memory location.
@@ -972,6 +975,63 @@ impl VariableList {
         .detach_and_log_err(cx);
     }
 
+    fn add_watch_expression(
+        &mut self,
+        _: &AddWatchExpression,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_add_watch_expression_dialog(window, cx);
+    }
+
+    fn open_add_watch_expression_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(stack_frame_id) = self.selected_stack_frame_id else {
+            return;
+        };
+
+        let Ok(workspace) = self
+            .weak_running
+            .read_with(cx, |running, _| running.workspace().clone())
+        else {
+            return;
+        };
+
+        let Some(workspace) = workspace.upgrade() else {
+            return;
+        };
+
+        let variable_list = cx.weak_entity();
+        workspace.update(cx, |workspace, cx| {
+            workspace.toggle_modal(window, cx, |window, cx| {
+                AddWatchModal::new(variable_list, stack_frame_id, window, cx)
+            });
+        });
+    }
+
+    fn add_watcher_expression(
+        &mut self,
+        expression: SharedString,
+        stack_frame_id: StackFrameId,
+        cx: &mut Context<Self>,
+    ) {
+        if expression.trim().is_empty() {
+            return;
+        }
+
+        let add_watcher_task = self.session.update(cx, |session, cx| {
+            session.add_watcher(expression, stack_frame_id, cx)
+        });
+
+        cx.spawn(async move |this, cx| {
+            add_watcher_task.await?;
+
+            this.update(cx, |this, cx| {
+                this.build_entries(cx);
+            })
+        })
+        .detach_and_log_err(cx);
+    }
+
     fn remove_watcher(&mut self, _: &RemoveWatch, _: &mut Window, cx: &mut Context<Self>) {
         let Some(selection) = self.selection.as_ref() else {
             return;
@@ -1558,6 +1618,9 @@ impl Focusable for VariableList {
 
 impl Render for VariableList {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let can_add_watch = self.selected_stack_frame_id.is_some() && !self.disabled;
+        let focus_handle = self.focus_handle.clone();
+
         v_flex()
             .track_focus(&self.focus_handle)
             .key_context("VariableList")
@@ -1576,9 +1639,31 @@ impl Render for VariableList {
             .on_action(cx.listener(Self::copy_variable_value))
             .on_action(cx.listener(Self::edit_variable))
             .on_action(cx.listener(Self::add_watcher))
+            .on_action(cx.listener(Self::add_watch_expression))
             .on_action(cx.listener(Self::remove_watcher))
             .on_action(cx.listener(Self::toggle_data_breakpoint))
             .on_action(cx.listener(Self::jump_to_variable_memory))
+            .child(
+                h_flex().w_full().justify_start().px_1().pt_0p5().child(
+                    IconButton::new("variable-list-add-watch", IconName::Plus)
+                        .icon_size(IconSize::Small)
+                        .disabled(!can_add_watch)
+                        .tooltip({
+                            let focus_handle = focus_handle.clone();
+                            move |_window, cx| {
+                                Tooltip::for_action_in(
+                                    "Add Watch Expression",
+                                    &AddWatchExpression,
+                                    &focus_handle,
+                                    cx,
+                                )
+                            }
+                        })
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_add_watch_expression_dialog(window, cx);
+                        })),
+                ),
+            )
             .child(
                 uniform_list(
                     "variable-list",
@@ -1613,6 +1698,84 @@ impl Render for VariableList {
                 window,
                 cx,
             )
+    }
+}
+
+struct AddWatchModal {
+    editor: Entity<Editor>,
+    variable_list: WeakEntity<VariableList>,
+    stack_frame_id: StackFrameId,
+}
+
+impl AddWatchModal {
+    fn new(
+        variable_list: WeakEntity<VariableList>,
+        stack_frame_id: StackFrameId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let editor = cx.new(|cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_placeholder_text("Expression to watch", window, cx);
+            editor
+        });
+        editor.focus_handle(cx).focus(window, cx);
+        Self {
+            editor,
+            variable_list,
+            stack_frame_id,
+        }
+    }
+
+    fn cancel(&mut self, _: &menu::Cancel, _window: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(DismissEvent);
+    }
+
+    fn confirm(&mut self, _: &menu::Confirm, _window: &mut Window, cx: &mut Context<Self>) {
+        let expression = self.editor.read(cx).text(cx);
+        let expression = expression.trim();
+        if expression.is_empty() {
+            return;
+        }
+
+        let expression: SharedString = expression.to_owned().into();
+        let stack_frame_id = self.stack_frame_id;
+        self.variable_list
+            .update(cx, |variable_list, cx| {
+                variable_list.add_watcher_expression(expression, stack_frame_id, cx);
+            })
+            .ok();
+        cx.emit(DismissEvent);
+    }
+}
+
+impl EventEmitter<DismissEvent> for AddWatchModal {}
+impl ModalView for AddWatchModal {}
+impl Focusable for AddWatchModal {
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.editor.focus_handle(cx)
+    }
+}
+
+impl Render for AddWatchModal {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .key_context("AddWatchModal")
+            .on_action(cx.listener(Self::cancel))
+            .on_action(cx.listener(Self::confirm))
+            .elevation_2(cx)
+            .w(rems(34.))
+            .child(
+                h_flex()
+                    .px_3()
+                    .pt_2()
+                    .pb_1()
+                    .w_full()
+                    .gap_1p5()
+                    .child(Icon::new(IconName::Plus).size(IconSize::XSmall))
+                    .child(Headline::new("Add Watch Expression").size(HeadlineSize::XSmall)),
+            )
+            .child(div().px_3().pb_3().w_full().child(self.editor.clone()))
     }
 }
 
