@@ -984,6 +984,42 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_imported_class_highlighting() {
+        let source = Rope::from(r#"import { Dog } from "./dog";
+Dog.bark();"#);
+        let theme = SyntaxTheme::new_test([("type", Hsla::blue()), ("type.class", Hsla::green())]);
+
+        for language in [
+            crate::language(
+                "typescript",
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            ),
+            crate::language("tsx", tree_sitter_typescript::LANGUAGE_TSX.into()),
+            crate::language("javascript", tree_sitter_typescript::LANGUAGE_TSX.into()),
+        ] {
+            language.set_theme(&theme);
+            let class_highlight = language
+                .grammar()
+                .and_then(|grammar| grammar.highlight_id_for_name("type.class"))
+                .expect("type.class highlight should be defined");
+
+            let highlights = language.highlight_text(&source, 0..source.len());
+            let class_ranges: Vec<_> = highlights
+                .into_iter()
+                .filter(|(_, highlight)| *highlight == class_highlight)
+                .map(|(range, _)| range)
+                .collect();
+
+            assert_eq!(
+                class_ranges,
+                vec![9..12, 29..32],
+                "{} imported class references should use the type.class highlight",
+                language.name()
+            );
+        }
+    }
+
     #[gpui::test]
     async fn test_outline(cx: &mut TestAppContext) {
         for language in [
