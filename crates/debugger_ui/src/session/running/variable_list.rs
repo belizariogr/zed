@@ -1616,11 +1616,41 @@ impl Focusable for VariableList {
     }
 }
 
-impl Render for VariableList {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl VariableList {
+    pub(crate) fn render_control_strip(&self) -> AnyElement {
         let can_add_watch = self.selected_stack_frame_id.is_some() && !self.disabled;
         let focus_handle = self.focus_handle.clone();
 
+        h_flex()
+            .child(
+                IconButton::new("variable-list-add-watch", IconName::Plus)
+                    .icon_size(IconSize::Small)
+                    .disabled(!can_add_watch)
+                    .tooltip({
+                        let focus_handle = focus_handle.clone();
+                        move |_window, cx| {
+                            Tooltip::for_action_in(
+                                "Add Watch Expression",
+                                &AddWatchExpression,
+                                &focus_handle,
+                                cx,
+                            )
+                        }
+                    })
+                    .on_click({
+                        let focus_handle = focus_handle.clone();
+                        move |_, window, cx| {
+                            focus_handle.focus(window, cx);
+                            window.dispatch_action(AddWatchExpression.boxed_clone(), cx);
+                        }
+                    }),
+            )
+            .into_any_element()
+    }
+}
+
+impl Render for VariableList {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .track_focus(&self.focus_handle)
             .key_context("VariableList")
@@ -1643,27 +1673,6 @@ impl Render for VariableList {
             .on_action(cx.listener(Self::remove_watcher))
             .on_action(cx.listener(Self::toggle_data_breakpoint))
             .on_action(cx.listener(Self::jump_to_variable_memory))
-            .child(
-                h_flex().w_full().justify_start().px_1().pt_0p5().child(
-                    IconButton::new("variable-list-add-watch", IconName::Plus)
-                        .icon_size(IconSize::Small)
-                        .disabled(!can_add_watch)
-                        .tooltip({
-                            let focus_handle = focus_handle.clone();
-                            move |_window, cx| {
-                                Tooltip::for_action_in(
-                                    "Add Watch Expression",
-                                    &AddWatchExpression,
-                                    &focus_handle,
-                                    cx,
-                                )
-                            }
-                        })
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.open_add_watch_expression_dialog(window, cx);
-                        })),
-                ),
-            )
             .child(
                 uniform_list(
                     "variable-list",

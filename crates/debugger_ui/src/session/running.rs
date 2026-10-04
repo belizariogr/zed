@@ -256,6 +256,32 @@ impl SubView {
         this
     }
 
+    pub(crate) fn variable_list(
+        list: Entity<VariableList>,
+        running_state: WeakEntity<RunningState>,
+        host_pane: WeakEntity<Pane>,
+        cx: &mut App,
+    ) -> Entity<Self> {
+        let weak_list = list.downgrade();
+        let this = Self::new(
+            list.focus_handle(cx),
+            list.into(),
+            DebuggerPaneItem::Variables,
+            running_state,
+            host_pane,
+            cx,
+        );
+
+        this.update(cx, |this, _| {
+            this.with_actions(Box::new(move |_, cx| {
+                weak_list
+                    .update(cx, |this, _| this.render_control_strip())
+                    .unwrap_or_else(|_| div().into_any_element())
+            }));
+        });
+        this
+    }
+
     pub(crate) fn view_kind(&self) -> DebuggerPaneItem {
         self.kind
     }
@@ -1427,10 +1453,8 @@ impl RunningState {
                 host_pane,
                 cx,
             )),
-            DebuggerPaneItem::Variables => Box::new(SubView::new(
-                self.variable_list.focus_handle(cx),
-                self.variable_list.clone().into(),
-                item_kind,
+            DebuggerPaneItem::Variables => Box::new(SubView::variable_list(
+                self.variable_list.clone(),
                 running_state,
                 host_pane,
                 cx,
@@ -1989,10 +2013,8 @@ impl RunningState {
             center_pane_handle.clone(),
             cx,
         );
-        let center_variables = SubView::new(
-            variable_list.focus_handle(cx),
-            variable_list.clone().into(),
-            DebuggerPaneItem::Variables,
+        let center_variables = SubView::variable_list(
+            variable_list.clone(),
             running_state.clone(),
             center_pane_handle,
             cx,

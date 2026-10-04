@@ -278,10 +278,8 @@ pub(crate) fn deserialize_pane_layout(
                         pane_handle.clone(),
                         cx,
                     )),
-                    DebuggerPaneItem::Variables => Box::new(SubView::new(
-                        variable_list.focus_handle(cx),
-                        variable_list.clone().into(),
-                        DebuggerPaneItem::Variables,
+                    DebuggerPaneItem::Variables => Box::new(SubView::variable_list(
+                        variable_list.clone(),
                         running_state.clone(),
                         pane_handle.clone(),
                         cx,
