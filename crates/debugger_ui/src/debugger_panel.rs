@@ -83,6 +83,9 @@ impl DebugPanel {
     ) -> Entity<Self> {
         cx.new(|cx| {
             let project = workspace.project().clone();
+            project.read(cx).dap_store().update(cx, |store, cx| {
+                store.register_window(window.window_handle().window_id(), cx);
+            });
             let focus_handle = cx.focus_handle();
             let thread_picker_menu_handle = PopoverMenuHandle::default();
             let session_picker_menu_handle = PopoverMenuHandle::default();

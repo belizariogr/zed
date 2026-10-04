@@ -241,9 +241,10 @@ impl VariableList {
             }),
             cx.on_focus_out(&focus_handle, window, |this, _, window, cx| {
                 this.edited_path.take();
-                let add_watch_focused = this.add_watch_editor.as_ref().is_some_and(|editor| {
-                    editor.focus_handle(cx).contains_focused(window, cx)
-                });
+                let add_watch_focused = this
+                    .add_watch_editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.focus_handle(cx).contains_focused(window, cx));
                 if !add_watch_focused {
                     this.add_watch_editor.take();
                 }
@@ -1268,10 +1269,10 @@ impl VariableList {
                                 .size(LabelSize::Small)
                                 .when(is_undefined, |this| this.color(Color::Disabled))
                                 .when(!is_undefined, |this| {
-                                    this.color(Color::Muted).when_some(
-                                        variable_color.value,
-                                        |this, color| this.color(Color::from(color)),
-                                    )
+                                    this.color(Color::Muted)
+                                        .when_some(variable_color.value, |this, color| {
+                                            this.color(Color::from(color))
+                                        })
                                 }),
                         )
                         .tooltip(Tooltip::text(value))
@@ -1665,7 +1666,6 @@ impl VariableList {
                         }
                     })
                     .on_click({
-                        let focus_handle = focus_handle.clone();
                         move |_, window, cx| {
                             focus_handle.focus(window, cx);
                             window.dispatch_action(AddWatchExpression.boxed_clone(), cx);

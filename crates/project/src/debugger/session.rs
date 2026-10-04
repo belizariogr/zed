@@ -989,6 +989,16 @@ impl Session {
                 })?
                 .await;
 
+            if result.is_ok()
+                && this.read_with(cx, |session, _| session.parent_session.is_none())?
+            {
+                dap_store
+                    .update(cx, |store, cx| {
+                        store.track_launched_browser(binary.clone(), cx)
+                    })?
+                    .await?;
+            }
+
             if result.is_err() {
                 let mut console = this.update(cx, |session, cx| session.console_output(cx))?;
 

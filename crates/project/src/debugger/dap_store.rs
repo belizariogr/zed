@@ -1,5 +1,6 @@
 use super::{
     breakpoint_store::BreakpointStore,
+    browser::LaunchedBrowser,
     dap_command::EvaluateCommand,
     locators,
     session::{self, Session, SessionStateEvent},
@@ -26,11 +27,14 @@ use dap::{
 };
 use fs::{Fs, RemoveOptions};
 use futures::{
-    StreamExt, TryStreamExt as _,
+    FutureExt as _, StreamExt, TryStreamExt as _,
     channel::mpsc::{self, UnboundedSender},
     future::{Shared, join_all},
 };
-use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, SharedString, Task, TaskExt};
+use gpui::{
+    App, AppContext, AsyncApp, Context, Entity, EventEmitter, SharedString, Subscription, Task,
+    TaskExt, WindowId,
+};
 use http_client::HttpClient;
 use language::{Buffer, LanguageToolchainStore};
 use node_runtime::NodeRuntime;
@@ -97,6 +101,9 @@ pub struct DapStore {
     breakpoint_store: Entity<BreakpointStore>,
     worktree_store: Entity<WorktreeStore>,
     sessions: BTreeMap<SessionId, Entity<Session>>,
+    launched_browsers: Vec<LaunchedBrowser>,
+    owner_windows: HashMap<WindowId, Subscription>,
+    workspace_shutdown_task: Option<Shared<Task<()>>>,
     next_session_id: u32,
     adapter_options: BTreeMap<DebugAdapterName, Arc<PersistedAdapterOptions>>,
 }
@@ -200,6 +207,8 @@ impl DapStore {
         fs: Arc<dyn Fs>,
         cx: &mut Context<Self>,
     ) -> Self {
+        cx.on_app_quit(|this, cx| this.shutdown_on_workspace_close(cx))
+            .detach();
         cx.background_spawn(async move {
             let dir = paths::debug_adapters_dir().join("js-debug-companion");
 
@@ -237,6 +246,9 @@ impl DapStore {
             breakpoint_store,
             worktree_store,
             sessions: Default::default(),
+            launched_browsers: Default::default(),
+            owner_windows: Default::default(),
+            workspace_shutdown_task: None,
             adapter_options: Default::default(),
         }
     }
@@ -729,13 +741,102 @@ impl DapStore {
 
     pub fn shutdown_sessions(&mut self, cx: &mut Context<Self>) -> Task<()> {
         let mut tasks = vec![];
-        for session_id in self.sessions.keys().cloned().collect::<Vec<_>>() {
+        for session_id in self
+            .sessions
+            .values()
+            .filter(|session| session.read(cx).parent_session().is_none())
+            .map(|session| session.read(cx).session_id())
+            .collect::<Vec<_>>()
+        {
             tasks.push(self.shutdown_session(session_id, cx));
         }
 
         cx.background_executor().spawn(async move {
-            futures::future::join_all(tasks).await;
+            for result in futures::future::join_all(tasks).await {
+                result.log_err();
+            }
         })
+    }
+
+    pub fn register_window(&mut self, window_id: WindowId, cx: &mut Context<Self>) {
+        if self.owner_windows.contains_key(&window_id) {
+            return;
+        }
+        if self.owner_windows.is_empty() {
+            self.workspace_shutdown_task = None;
+        }
+        let store = cx.entity();
+        let subscription = cx.on_window_closed(move |cx, closed_window_id| {
+            if closed_window_id == window_id {
+                store.update(cx, |store, cx| {
+                    store.owner_windows.remove(&window_id);
+                    if store.owner_windows.is_empty() {
+                        drop(store.shutdown_on_workspace_close(cx));
+                    }
+                });
+            }
+        });
+        self.owner_windows.insert(window_id, subscription);
+    }
+
+    pub(super) fn track_launched_browser(
+        &mut self,
+        binary: DebugAdapterBinary,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let Some(http_client) = self.as_local().map(|local| local.http_client.clone()) else {
+            return Task::ready(Ok(()));
+        };
+        cx.spawn(async move |this, cx| {
+            if let Some(browser) = LaunchedBrowser::capture(&binary, http_client.as_ref())
+                .await
+                .context("Tracking the launched browser for workspace cleanup")?
+            {
+                let browser = this.update(cx, |this, _| {
+                    if this.workspace_shutdown_task.is_some() {
+                        return Some(browser);
+                    }
+                    if !this.launched_browsers.contains(&browser) {
+                        this.launched_browsers.push(browser);
+                    }
+                    None
+                })?;
+                if let Some(browser) = browser {
+                    browser.close().await?;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    fn shutdown_on_workspace_close(&mut self, cx: &mut Context<Self>) -> Shared<Task<()>> {
+        if let Some(task) = &self.workspace_shutdown_task {
+            return task.clone();
+        }
+        let browsers = std::mem::take(&mut self.launched_browsers);
+        let executor = cx.background_executor().clone();
+        let shutdown = self.shutdown_sessions(cx);
+        let store = cx.entity();
+        let task = cx
+            .background_spawn(async move {
+                join_all(browsers.into_iter().map(|browser| {
+                    let executor = executor.clone();
+                    async move {
+                        futures::select_biased! {
+                            result = browser.close().fuse() => { result.log_err(); },
+                            _ = executor.timer(std::time::Duration::from_secs(3)).fuse() => {
+                                log::error!("Timed out closing a browser launched by the debugger");
+                            }
+                        }
+                    }
+                }))
+                .await;
+                shutdown.await;
+                drop(store);
+            })
+            .shared();
+        self.workspace_shutdown_task = Some(task.clone());
+        task
     }
 
     pub fn shutdown_session(

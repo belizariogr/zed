@@ -2006,6 +2006,70 @@ async fn test_active_debug_line_setting(executor: BackgroundExecutor, cx: &mut T
 }
 
 #[gpui::test]
+async fn test_closing_a_window_shuts_down_only_its_debug_sessions(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/project"), json!({"main.js": ""}))
+        .await;
+    let project = Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
+    let other_project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+    let workspace = init_test_workspace(&project, cx).await;
+    let other_workspace = init_test_workspace(&other_project, cx).await;
+    let disconnected = Arc::new(AtomicBool::new(false));
+    let session = start_debug_session(&workspace, cx, {
+        let disconnected = disconnected.clone();
+        move |client| {
+            let disconnected = disconnected.clone();
+            client.on_request::<Disconnect, _>(move |_, arguments| {
+                assert_eq!(arguments.terminate_debuggee, Some(true));
+                disconnected.store(true, Ordering::SeqCst);
+                Ok(())
+            });
+        }
+    })
+    .expect("debug session should start");
+    let other_disconnected = Arc::new(AtomicBool::new(false));
+    let other_session = start_debug_session(&other_workspace, cx, {
+        let other_disconnected = other_disconnected.clone();
+        move |client| {
+            let other_disconnected = other_disconnected.clone();
+            client.on_request::<Disconnect, _>(move |_, arguments| {
+                assert_eq!(arguments.terminate_debuggee, Some(true));
+                other_disconnected.store(true, Ordering::SeqCst);
+                Ok(())
+            });
+        }
+    })
+    .expect("other debug session should start");
+
+    let prepare = workspace
+        .update(cx, |multi_workspace, window, cx| {
+            multi_workspace.workspace().update(cx, |workspace, cx| {
+                workspace.prepare_to_close(workspace::CloseIntent::CloseWindow, window, cx)
+            })
+        })
+        .expect("workspace window should exist");
+    assert!(prepare.await.expect("preparing the window should succeed"));
+    cx.run_until_parked();
+    assert!(!disconnected.load(Ordering::SeqCst));
+    assert!(!other_disconnected.load(Ordering::SeqCst));
+
+    workspace
+        .update(cx, |_, window, _| window.remove_window())
+        .expect("workspace window should close");
+    cx.run_until_parked();
+    assert!(disconnected.load(Ordering::SeqCst));
+    assert!(session.read_with(cx, |session, _| session.is_terminated()));
+    assert!(!other_disconnected.load(Ordering::SeqCst));
+    assert!(!other_session.read_with(cx, |session, _| session.is_terminated()));
+    other_workspace
+        .update(cx, |_, window, _| window.remove_window())
+        .expect("other workspace window should close");
+    cx.run_until_parked();
+    assert!(other_disconnected.load(Ordering::SeqCst));
+}
+
+#[gpui::test]
 async fn test_debug_adapters_shutdown_on_app_quit(
     executor: BackgroundExecutor,
     cx: &mut TestAppContext,
