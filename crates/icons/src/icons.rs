@@ -98,6 +98,7 @@ pub enum IconName {
     DebugIgnoreBreakpoints,
     DebugLogBreakpoint,
     DebugPause,
+    DebugStackFrame,
     DebugStepInto,
     DebugStepOut,
     DebugStepOver,

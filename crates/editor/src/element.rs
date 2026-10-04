@@ -102,10 +102,11 @@ use workspace::{
 struct LineHighlightSpec {
     selection: bool,
     breakpoint: bool,
-    _active_stack_frame: bool,
+    active_stack_frame: bool,
 }
 
 enum LineNumberStyle {
+    ActiveStackFrame,
     Breakpoint,
     DiffAdded,
     DiffDeleted,
@@ -114,23 +115,42 @@ enum LineNumberStyle {
 }
 
 impl LineNumberStyle {
-    fn new(is_active: bool, is_breakpoint: bool, diff_status: Option<DiffHunkStatus>) -> Self {
+    fn new(
+        is_active: bool,
+        is_breakpoint: bool,
+        is_active_stack_frame: bool,
+        diff_status: Option<DiffHunkStatus>,
+    ) -> Self {
         match (
             is_active,
             is_breakpoint,
+            is_active_stack_frame,
             diff_status.map(|status| status.kind),
         ) {
-            (_, true, _) => Self::Breakpoint,
-            (true, _, _) => Self::Active,
-            (_, _, Some(DiffHunkStatusKind::Added)) => Self::DiffAdded,
-            (_, _, Some(DiffHunkStatusKind::Deleted)) => Self::DiffDeleted,
-            (_, _, _) => Self::Inactive,
+            (_, _, true, _) => Self::ActiveStackFrame,
+            (_, true, _, _) => Self::Breakpoint,
+            (true, _, _, _) => Self::Active,
+            (_, _, _, Some(DiffHunkStatusKind::Added)) => Self::DiffAdded,
+            (_, _, _, Some(DiffHunkStatusKind::Deleted)) => Self::DiffDeleted,
+            (_, _, _, _) => Self::Inactive,
         }
     }
 
-    fn color(self, colors: &theme::ThemeColors) -> Hsla {
+    fn color(
+        self,
+        colors: &theme::ThemeColors,
+        status: &theme::StatusColors,
+        debugger_session_active: bool,
+    ) -> Hsla {
         match self {
-            Self::Breakpoint => colors.debugger_accent,
+            Self::ActiveStackFrame => status.warning,
+            Self::Breakpoint => {
+                if debugger_session_active {
+                    colors.debugger_accent
+                } else {
+                    colors.debugger_accent.opacity(0.45)
+                }
+            }
             Self::DiffAdded => colors.version_control_added,
             Self::DiffDeleted => colors.version_control_deleted,
             Self::Active => colors.editor_active_line_number,
@@ -2648,6 +2668,32 @@ impl EditorElement {
         })
     }
 
+    fn layout_active_stack_frames(
+        &self,
+        gutter: &Gutter,
+        active_stack_frame_rows: &HashSet<DisplayRow>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<AnyElement> {
+        if self.split_side == Some(SplitSide::Left) {
+            return Vec::new();
+        }
+
+        self.editor.update(cx, |editor, cx| {
+            active_stack_frame_rows
+                .iter()
+                .filter_map(|row| {
+                    gutter.layout_item_skipping_folds(
+                        *row,
+                        |cx, _| editor.render_active_stack_frame(*row, cx).into_any_element(),
+                        window,
+                        cx,
+                    )
+                })
+                .collect_vec()
+        })
+    }
+
     fn should_render_diff_review_button(
         &self,
         range: Range<DisplayRow>,
@@ -2863,7 +2909,9 @@ impl EditorElement {
             return Arc::default();
         }
 
-        let relative = self.editor.read(cx).relative_line_numbers(cx);
+        let (relative, debugger_session_active) = self.editor.read_with(cx, |editor, cx| {
+            (editor.relative_line_numbers(cx), editor.has_active_debug_session(cx))
+        });
 
         let relative_line_numbers_enabled = relative.enabled();
         let relative_rows = if relative_line_numbers_enabled
@@ -2908,9 +2956,14 @@ impl EditorElement {
                 let color = LineNumberStyle::new(
                     spec.is_some(),
                     spec.is_some_and(|spec| spec.breakpoint),
+                    spec.is_some_and(|spec| spec.active_stack_frame),
                     row_info.diff_status,
                 )
-                .color(cx.theme().colors());
+                .color(
+                    cx.theme().colors(),
+                    cx.theme().status(),
+                    debugger_session_active,
+                );
 
                 let shaped_line =
                     self.shape_line_number(SharedString::from(&line_number), color, window);
@@ -5571,6 +5624,10 @@ impl EditorElement {
 
             for breakpoint in layout.breakpoints.iter_mut() {
                 breakpoint.paint(window, cx);
+            }
+
+            for active_stack_frame in layout.active_stack_frames.iter_mut() {
+                active_stack_frame.paint(window, cx);
             }
 
             for test_indicator in layout.test_indicators.iter_mut() {
@@ -9000,10 +9057,21 @@ impl Element for EditorElement {
                         editor.active_breakpoints(start_row..end_row, window, cx)
                     });
 
+                    let active_stack_frame_rows = self.editor.update(cx, |editor, cx| {
+                        editor.active_stack_frame_rows(start_row..end_row, window, cx)
+                    });
+
                     for (display_row, (_, bp, state)) in &breakpoint_rows {
                         if bp.is_enabled() && state.is_none_or(|s| s.verified) {
                             active_rows.entry(*display_row).or_default().breakpoint = true;
                         }
+                    }
+
+                    for display_row in &active_stack_frame_rows {
+                        active_rows
+                            .entry(*display_row)
+                            .or_default()
+                            .active_stack_frame = true;
                     }
 
                     let gutter = Gutter {
@@ -9669,6 +9737,7 @@ impl Element for EditorElement {
                         let mut rows = editor.active_bookmarks(start_row..end_row, window, cx);
                         rows.retain(|k| !run_indicator_rows.contains(k));
                         rows.retain(|k| !breakpoint_rows.contains_key(k));
+                        rows.retain(|k| !active_stack_frame_rows.contains(k));
                         rows
                     });
 
@@ -9683,11 +9752,19 @@ impl Element for EditorElement {
                         .unwrap_or(gutter_settings.breakpoints);
 
                     breakpoint_rows.retain(|k, _| !run_indicator_rows.contains(k));
+                    breakpoint_rows.retain(|k, _| !active_stack_frame_rows.contains(k));
                     let mut breakpoints = if show_breakpoints {
                         self.layout_breakpoints(&gutter, &breakpoint_rows, window, cx)
                     } else {
                         Vec::new()
                     };
+
+                    let active_stack_frames = self.layout_active_stack_frames(
+                        &gutter,
+                        &active_stack_frame_rows,
+                        window,
+                        cx,
+                    );
 
                     let gutter_hover_button = self
                         .editor
@@ -9699,6 +9776,7 @@ impl Element for EditorElement {
 
                     if let Some(row) = gutter_hover_button
                         && !breakpoint_rows.contains_key(&row)
+                        && !active_stack_frame_rows.contains(&row)
                         && !run_indicator_rows.contains(&row)
                         && !bookmark_rows.contains(&row)
                         && (show_bookmarks || show_breakpoints)
@@ -10006,6 +10084,7 @@ impl Element for EditorElement {
                         test_indicators,
                         bookmarks,
                         breakpoints,
+                        active_stack_frames,
                         diff_review_button,
                         crease_toggles,
                         crease_trailers,
@@ -10223,6 +10302,7 @@ pub struct EditorLayout {
     test_indicators: Vec<AnyElement>,
     bookmarks: Vec<AnyElement>,
     breakpoints: Vec<AnyElement>,
+    active_stack_frames: Vec<AnyElement>,
     diff_review_button: Option<AnyElement>,
     crease_toggles: Vec<Option<AnyElement>>,
     expand_toggles: Vec<Option<(AnyElement, gpui::Point<Pixels>)>>,

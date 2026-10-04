@@ -220,6 +220,7 @@ use project::{
             Breakpoint, BreakpointEditAction, BreakpointSessionState, BreakpointState,
             BreakpointStore, BreakpointStoreEvent,
         },
+        dap_store::DapStoreEvent,
         session::{Session, SessionEvent},
     },
     git_store::GitStoreEvent,
@@ -2696,6 +2697,20 @@ impl Editor {
                     }),
                 );
 
+            editor._subscriptions.push(cx.subscribe(
+                &dap_store,
+                |_, _, event: &DapStoreEvent, cx| {
+                    if matches!(
+                        event,
+                        DapStoreEvent::DebugClientStarted(_)
+                            | DapStoreEvent::DebugSessionInitialized(_)
+                            | DapStoreEvent::DebugClientShutdown(_)
+                    ) {
+                        cx.notify();
+                    }
+                },
+            ));
+
             for session in dap_store.read(cx).sessions().cloned().collect::<Vec<_>>() {
                 editor
                     ._subscriptions
@@ -4690,6 +4705,68 @@ impl Editor {
         })
     }
 
+    fn active_stack_frame_rows(
+        &self,
+        range: Range<DisplayRow>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> HashSet<DisplayRow> {
+        let snapshot = self.snapshot(window, cx);
+        let mut rows = HashSet::default();
+
+        for (highlight_range, _) in self.highlighted_rows::<ActiveDebugLine>(cx) {
+            let start = highlight_range.start.to_display_point(&snapshot);
+            let end = highlight_range.end.to_display_point(&snapshot);
+            let start_row = start.row();
+            let end_row = if !highlight_range.end.is_max() && end.column() == 0 {
+                DisplayRow(end.row().0.saturating_sub(1))
+            } else {
+                end.row()
+            };
+
+            for row in start_row.0..=end_row.0 {
+                let display_row = DisplayRow(row);
+                if display_row >= range.start && display_row < range.end {
+                    rows.insert(display_row);
+                }
+            }
+        }
+
+        rows
+    }
+
+    fn render_active_stack_frame(&self, row: DisplayRow, _cx: &mut Context<Self>) -> IconButton {
+        IconButton::new(("active_stack_frame_indicator", row.0 as usize), IconName::DebugStackFrame)
+            .icon_size(IconSize::XSmall)
+            .size(ui::ButtonSize::None)
+            .icon_color(Color::Warning)
+            .style(ButtonStyle::Transparent)
+            .tooltip(Tooltip::text("Current Debug Line"))
+    }
+
+    pub(crate) fn has_active_debug_session(&self, cx: &App) -> bool {
+        let Some(project) = self.project.as_ref() else {
+            return false;
+        };
+
+        project
+            .read(cx)
+            .dap_store()
+            .read(cx)
+            .sessions()
+            .any(|session| !session.read(cx).is_terminated())
+    }
+
+    fn breakpoint_color(&self, is_rejected: bool, cx: &App) -> Color {
+        if is_rejected {
+            Color::Disabled
+        } else if self.has_active_debug_session(cx) {
+            Color::Debugger
+        } else {
+            Color::Custom(cx.theme().colors().debugger_accent.opacity(0.45))
+        }
+    }
+
     fn render_breakpoint(
         &self,
         position: Anchor,
@@ -4708,13 +4785,7 @@ impl Editor {
                 (true, true) => ui::IconName::DebugDisabledLogBreakpoint,
             };
 
-            let color = if is_rejected {
-                Color::Disabled
-            } else {
-                Color::Debugger
-            };
-
-            (color, icon)
+            (self.breakpoint_color(is_rejected, cx), icon)
         };
 
         let breakpoint = Arc::from(breakpoint.clone());
