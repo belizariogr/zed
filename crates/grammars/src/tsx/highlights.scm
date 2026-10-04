@@ -1,6 +1,10 @@
 ; Variables
 (identifier) @variable
 
+; PascalCase for classes
+((identifier) @type.class
+  (#match? @type.class "^_*[A-Z][A-Za-z0-9_]*$"))
+
 (call_expression
   function: (member_expression
     object: (identifier) @type
