@@ -208,6 +208,7 @@ Newest first. Hashes may change if history is rewritten; match by message/intent
 
 | Commit | Summary | What to preserve |
 | --- | --- | --- |
+| Match by summary | Overlay the stack frame arrow on gutter breakpoints | VS Code-style outlined stack frame arrow drawn above (and around) a smaller breakpoint circle without blocking clicks, so breakpoints can be removed/re-added on the stopped line; `assets` build script so newly added icons get embedded in release builds (`editor`, `assets/icons/debug_stack_frame.svg`, `crates/assets/build.rs`). |
 | Match by summary | Close debugger-launched browsers when their Zed window closes | Track the original browser endpoint until its owning Zed window closes or the app quits, even after the debug tab/session ends; preserve browsers owned by other Zed windows (`project` debugger browser/dap_store/session, `debugger_ui` panel). |
 | `75d684dfb5` | Show active stack frame indicator in the editor gutter | Dedicated gutter icon for the current debug line; soften breakpoint accents when no debug session is running (`editor`, `icons`, `assets/icons/debug_stack_frame.svg`). |
 | `b6f480a59f` | Improve watch expression UI and undefined handling | Inline add-watch input in Variables; keep watches when evaluation fails or returns undefined (`debugger_ui` variable list, `project` debugger session). |

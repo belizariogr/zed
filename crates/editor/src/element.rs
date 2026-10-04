@@ -2685,7 +2685,7 @@ impl EditorElement {
                 .filter_map(|row| {
                     gutter.layout_item_skipping_folds(
                         *row,
-                        |cx, _| editor.render_active_stack_frame(*row, cx).into_any_element(),
+                        |_, _| editor.render_active_stack_frame().into_any_element(),
                         window,
                         cx,
                     )
@@ -5626,16 +5626,18 @@ impl EditorElement {
                 breakpoint.paint(window, cx);
             }
 
-            for active_stack_frame in layout.active_stack_frames.iter_mut() {
-                active_stack_frame.paint(window, cx);
-            }
-
             for test_indicator in layout.test_indicators.iter_mut() {
                 test_indicator.paint(window, cx);
             }
 
             if let Some(diff_review_button) = layout.diff_review_button.as_mut() {
                 diff_review_button.paint(window, cx);
+            }
+        });
+
+        window.paint_layer(layout.gutter_hitbox.bounds, |window| {
+            for active_stack_frame in layout.active_stack_frames.iter_mut() {
+                active_stack_frame.paint(window, cx);
             }
         });
     }
@@ -9752,7 +9754,6 @@ impl Element for EditorElement {
                         .unwrap_or(gutter_settings.breakpoints);
 
                     breakpoint_rows.retain(|k, _| !run_indicator_rows.contains(k));
-                    breakpoint_rows.retain(|k, _| !active_stack_frame_rows.contains(k));
                     let mut breakpoints = if show_breakpoints {
                         self.layout_breakpoints(&gutter, &breakpoint_rows, window, cx)
                     } else {
@@ -9776,7 +9777,6 @@ impl Element for EditorElement {
 
                     if let Some(row) = gutter_hover_button
                         && !breakpoint_rows.contains_key(&row)
-                        && !active_stack_frame_rows.contains(&row)
                         && !run_indicator_rows.contains(&row)
                         && !bookmark_rows.contains(&row)
                         && (show_bookmarks || show_breakpoints)

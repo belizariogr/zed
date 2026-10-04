@@ -299,6 +299,8 @@ use crate::{
 pub const FILE_HEADER_HEIGHT: u32 = 2;
 pub const BUFFER_HEADER_PADDING: Rems = rems(0.25);
 pub const MULTI_BUFFER_EXCERPT_HEADER_HEIGHT: u32 = 1;
+const GUTTER_INDICATOR_WIDTH: Rems = rems(0.75);
+const GUTTER_BREAKPOINT_ICON_SIZE: IconSize = IconSize::Custom(rems(0.5625));
 const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
 const MAX_LINE_LEN: usize = 1024;
 const MIN_NAVIGATION_HISTORY_ROW_DELTA: i64 = 10;
@@ -1715,6 +1717,13 @@ impl GutterButtonIntent {
         match self {
             Self::SetBookmark => ui::IconName::Bookmark,
             Self::SetBreakpoint => ui::IconName::DebugBreakpoint,
+        }
+    }
+
+    fn icon_size(&self) -> IconSize {
+        match self {
+            Self::SetBookmark => IconSize::XSmall,
+            Self::SetBreakpoint => GUTTER_BREAKPOINT_ICON_SIZE,
         }
     }
 
@@ -4735,13 +4744,19 @@ impl Editor {
         rows
     }
 
-    fn render_active_stack_frame(&self, row: DisplayRow, _cx: &mut Context<Self>) -> IconButton {
-        IconButton::new(("active_stack_frame_indicator", row.0 as usize), IconName::DebugStackFrame)
-            .icon_size(IconSize::XSmall)
-            .size(ui::ButtonSize::None)
-            .icon_color(Color::Warning)
-            .style(ButtonStyle::Transparent)
-            .tooltip(Tooltip::text("Current Debug Line"))
+    // Rendered without any mouse handlers so clicks fall through to the
+    // breakpoint button painted underneath it. The outer box matches the
+    // breakpoint button's size so both share the same center, and the glyph is
+    // offset so the breakpoint circle sits inside the arrow's body (the glyph's
+    // body is left of its center because of the tip).
+    fn render_active_stack_frame(&self) -> Div {
+        div().w(GUTTER_INDICATOR_WIDTH).h(rems(1.)).relative().child(
+            div().absolute().left(rems(-0.1875)).top(rems(-0.0625)).child(
+                Icon::new(IconName::DebugStackFrame)
+                    .size(IconSize::Custom(rems(1.125)))
+                    .color(Color::Warning),
+            ),
+        )
     }
 
     pub(crate) fn has_active_debug_session(&self, cx: &App) -> bool {
@@ -4808,7 +4823,8 @@ impl Editor {
             SharedString::from("Right-click for more options")
         };
         IconButton::new(("breakpoint_indicator", row.0 as usize), icon)
-            .icon_size(IconSize::XSmall)
+            .icon_size(GUTTER_BREAKPOINT_ICON_SIZE)
+            .width(GUTTER_INDICATOR_WIDTH)
             .size(ui::ButtonSize::None)
             .when(is_rejected, |this| {
                 this.indicator(Indicator::icon(Icon::new(IconName::Warning)).color(Color::Warning))
@@ -4881,7 +4897,8 @@ impl Editor {
         let focus_handle = self.focus_handle.clone();
         let has_context_menu = self.has_mouse_context_menu();
         IconButton::new(("add_breakpoint_button", row.0 as usize), intent.icon())
-            .icon_size(IconSize::XSmall)
+            .icon_size(intent.icon_size())
+            .width(GUTTER_INDICATOR_WIDTH)
             .size(ui::ButtonSize::None)
             .icon_color(intent.color())
             .style(ButtonStyle::Transparent)
