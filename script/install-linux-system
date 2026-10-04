@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  cat <<EOF
+Usage: ${0##*/}
+
+Builds Zed in release mode and installs it system-wide:
+
+  \$PREFIX/bin/zed              CLI (default: /usr/bin/zed)
+  \$PREFIX/lib/zed/zed-editor   Editor binary
+  \$PREFIX/share/applications/  Desktop entry
+  \$PREFIX/share/icons/         App icons
+
+Environment:
+  PREFIX   Install prefix (default: /usr)
+  SUDO     Privilege helper (default: sudo)
+
+Before running this you should ensure you have all the build dependencies
+installed with \`./script/linux\`.
+EOF
+}
+
+if [[ $# -gt 0 ]]; then
+  usage
+  exit 1
+fi
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+PREFIX="${PREFIX:-/usr}"
+SUDO="${SUDO:-sudo}"
+
+if ! command -v cargo >/dev/null 2>&1; then
+  if [[ -f "${HOME}/.cargo/env" ]]; then
+    # shellcheck source=/dev/null
+    source "${HOME}/.cargo/env"
+  fi
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "error: cargo not found. Install Rust with rustup, then retry." >&2
+  exit 1
+fi
+
+if ! command -v "$SUDO" >/dev/null 2>&1; then
+  echo "error: '${SUDO}' not found. Install as root or set SUDO=." >&2
+  exit 1
+fi
+
+channel="$(<crates/zed/RELEASE_CHANNEL)"
+version="$(script/get-crate-version zed)"
+export RELEASE_VERSION="${version}"
+export ZED_UPDATE_EXPLANATION="Rebuild with ${root}/script/install-linux-system"
+
+echo "==> Building Zed ${version} (${channel}) in release mode"
+cargo build --release --package zed --package cli
+
+cli_bin="${CARGO_TARGET_DIR:-target}/release/cli"
+editor_bin="${CARGO_TARGET_DIR:-target}/release/zed"
+
+if [[ ! -x "$cli_bin" || ! -x "$editor_bin" ]]; then
+  echo "error: expected release binaries were not produced:" >&2
+  echo "  ${cli_bin}" >&2
+  echo "  ${editor_bin}" >&2
+  exit 1
+fi
+
+suffix=""
+if [[ "$channel" != "stable" ]]; then
+  suffix="-${channel}"
+fi
+
+case "$channel" in
+  stable)
+    app_id="dev.zed.Zed"
+    app_name="Zed"
+    ;;
+  nightly)
+    app_id="dev.zed.Zed-Nightly"
+    app_name="Zed Nightly"
+    ;;
+  preview)
+    app_id="dev.zed.Zed-Preview"
+    app_name="Zed Preview"
+    ;;
+  dev)
+    app_id="dev.zed.Zed-Dev"
+    app_name="Zed Devel"
+    ;;
+  *)
+    app_id="dev.zed.Zed"
+    app_name="Zed"
+    ;;
+esac
+
+temp_dir="$(mktemp -d)"
+trap 'rm -rf "$temp_dir"' EXIT
+
+desktop_file="${temp_dir}/${app_id}.desktop"
+export DO_STARTUP_NOTIFY="true"
+export APP_CLI="zed"
+export APP_ICON="zed"
+export APP_ARGS="%U"
+export APP_NAME="$app_name"
+envsubst <"crates/zed/resources/zed.desktop.in" >"$desktop_file"
+chmod 755 "$desktop_file"
+
+echo "==> Installing into ${PREFIX} (requires privileges)"
+"$SUDO" install -Dm755 "$cli_bin" "${PREFIX}/bin/zed"
+"$SUDO" install -Dm755 "$editor_bin" "${PREFIX}/lib/zed/zed-editor"
+"$SUDO" install -Dm755 "$desktop_file" "${PREFIX}/share/applications/${app_id}.desktop"
+"$SUDO" install -Dm644 "crates/zed/resources/app-icon${suffix}.png" \
+  "${PREFIX}/share/icons/hicolor/512x512/apps/zed.png"
+"$SUDO" install -Dm644 "crates/zed/resources/app-icon${suffix}@2x.png" \
+  "${PREFIX}/share/icons/hicolor/1024x1024/apps/zed.png"
+
+echo
+echo "Installed:"
+echo "  ${PREFIX}/bin/zed"
+echo "  ${PREFIX}/lib/zed/zed-editor"
+echo "  ${PREFIX}/share/applications/${app_id}.desktop"
+echo
+echo "Run with: zed"
