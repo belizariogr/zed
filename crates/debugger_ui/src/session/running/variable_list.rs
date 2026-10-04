@@ -224,7 +224,7 @@ impl VariableList {
                     this.selected_stack_frame_id.take();
                     this.build_entries(cx);
                 }
-                SessionEvent::Stopped(_) => {
+                SessionEvent::Stopped { .. } => {
                     this.selection.take();
                     this.edited_path.take();
                     this.selected_stack_frame_id.take();

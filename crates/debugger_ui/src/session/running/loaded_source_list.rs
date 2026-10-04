@@ -17,7 +17,7 @@ impl LoadedSourceList {
         let list = ListState::new(0, gpui::ListAlignment::Top, px(1000.));
 
         let _subscription = cx.subscribe(&session, |this, _, event, cx| match event {
-            SessionEvent::Stopped(_)
+            SessionEvent::Stopped { .. }
             | SessionEvent::HistoricSnapshotSelected
             | SessionEvent::LoadedSources => {
                 this.invalidate = true;

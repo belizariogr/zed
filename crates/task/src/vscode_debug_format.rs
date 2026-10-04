@@ -24,7 +24,7 @@ impl VsCodeDebugTaskDefinition {
         let mut config = replacer.replace_value(self.other_attributes);
         let adapter = task_type_to_adapter_name(&self.r#type);
         if let Some(config) = config.as_object_mut()
-            && adapter == "JavaScript"
+            && matches!(adapter.as_str(), "JavaScript" | "Bun")
         {
             config.insert("type".to_owned(), self.r#type.clone().into());
             if let Some(port) = self.port.take() {
@@ -86,6 +86,7 @@ fn task_type_to_adapter_name(task_type: &str) -> String {
     match task_type {
         "pwa-node" | "node" | "node-terminal" | "chrome" | "pwa-chrome" | "edge" | "pwa-edge"
         | "msedge" | "pwa-msedge" => "JavaScript",
+        "bun" | "bun-dap-x" => "Bun",
         "go" => "Delve",
         "php" => "Xdebug",
         "cppdbg" | "lldb" => "CodeLLDB",
@@ -190,5 +191,65 @@ mod tests {
                 build: None
             }])
         );
+    }
+
+    #[test]
+    fn test_parsing_bun_launch_json() -> anyhow::Result<()> {
+        for task_type in ["bun", "bun-dap-x"] {
+            let parsed: VsCodeDebugTaskFile = serde_json::from_value(json!({
+                "version": "0.2.0",
+                "configurations": [
+                    {
+                        "name": "Debug Bun file",
+                        "type": task_type,
+                        "request": "launch",
+                        "program": "${file}",
+                        "cwd": "${workspaceFolder}",
+                        "runtime": "bun",
+                    },
+                    {
+                        "name": "Attach to Bun",
+                        "type": task_type,
+                        "request": "attach",
+                        "host": "127.0.0.1",
+                        "port": 6499,
+                        "path": "/inspector-id",
+                    },
+                ],
+            }))?;
+            let zed = DebugTaskFile::try_from(parsed)?;
+            assert_eq!(
+                zed,
+                DebugTaskFile(vec![
+                    DebugScenario {
+                        label: "Debug Bun file".into(),
+                        adapter: "Bun".into(),
+                        config: json!({
+                            "type": task_type,
+                            "request": "launch",
+                            "program": "${ZED_FILE}",
+                            "cwd": "${ZED_WORKTREE_ROOT}",
+                            "runtime": "bun",
+                        }),
+                        tcp_connection: None,
+                        build: None,
+                    },
+                    DebugScenario {
+                        label: "Attach to Bun".into(),
+                        adapter: "Bun".into(),
+                        config: json!({
+                            "type": task_type,
+                            "request": "attach",
+                            "host": "127.0.0.1",
+                            "port": 6499,
+                            "path": "/inspector-id",
+                        }),
+                        tcp_connection: None,
+                        build: None,
+                    },
+                ])
+            );
+        }
+        Ok(())
     }
 }

@@ -22,7 +22,7 @@ use dap::requests::{Request, RunInTerminal, StartDebugging};
 use dap::transport::TcpTransport;
 use dap::{
     Capabilities, ContinueArguments, EvaluateArgumentsContext, Module, Source, StackFrameId,
-    SteppingGranularity, StoppedEvent, VariableReference,
+    SteppingGranularity, StoppedEvent, StoppedEventReason, VariableReference,
     client::{DebugAdapterClient, SessionId},
     messages::{Events, Message},
 };
@@ -793,7 +793,10 @@ impl CompletionsQuery {
 pub enum SessionEvent {
     Modules,
     LoadedSources,
-    Stopped(Option<ThreadId>),
+    Stopped {
+        thread_id: Option<ThreadId>,
+        reason: StoppedEventReason,
+    },
     StackTrace,
     Variables,
     Watchers,
@@ -1506,12 +1509,13 @@ impl Session {
         self.invalidate_generic();
         self.active_snapshot.threads.clear();
         self.active_snapshot.variables.clear();
-        cx.emit(SessionEvent::Stopped(
-            event
+        cx.emit(SessionEvent::Stopped {
+            thread_id: event
                 .thread_id
                 .map(Into::into)
                 .filter(|_| !event.preserve_focus_hint.unwrap_or(false)),
-        ));
+            reason: event.reason,
+        });
         cx.emit(SessionEvent::InvalidateInlineValue);
         cx.notify();
     }

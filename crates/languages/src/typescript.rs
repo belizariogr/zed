@@ -420,6 +420,11 @@ async fn detect_package_manager(
     if fs.is_file(&worktree_root.join("yarn.lock")).await {
         return "yarn";
     }
+    if fs.is_file(&worktree_root.join("bun.lock")).await
+        || fs.is_file(&worktree_root.join("bun.lockb")).await
+    {
+        return "bun";
+    }
     "npm"
 }
 
@@ -922,8 +927,34 @@ mod tests {
     use util::{path, rel_path::rel_path};
 
     use crate::typescript::{
-        PackageJsonData, TypeScriptContextProvider, replace_test_name_parameters,
+        PackageJsonData, TypeScriptContextProvider, detect_package_manager,
+        replace_test_name_parameters,
     };
+
+    #[gpui::test]
+    async fn test_detect_bun_package_manager_from_lockfile(executor: BackgroundExecutor) {
+        for lockfile in ["bun.lock", "bun.lockb"] {
+            let fs = FakeFs::new(executor.clone());
+            fs.insert_tree(path!("/project"), json!({lockfile: ""}))
+                .await;
+            assert_eq!(
+                detect_package_manager(path!("/project").into(), fs.clone(), None).await,
+                "bun"
+            );
+            assert_eq!(
+                detect_package_manager(
+                    path!("/project").into(),
+                    fs,
+                    Some(PackageJsonData {
+                        package_manager: Some("npm"),
+                        ..PackageJsonData::default()
+                    }),
+                )
+                .await,
+                "npm"
+            );
+        }
+    }
 
     #[test]
     fn test_class_instantiation_highlighting() {

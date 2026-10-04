@@ -10,7 +10,7 @@ TypeScript and TSX support are available natively in Zed.
 - Tree-sitter: [tree-sitter/tree-sitter-typescript](https://github.com/tree-sitter/tree-sitter-typescript)
 - Language Server: [yioneko/vtsls](https://github.com/yioneko/vtsls)
 - Alternate Language Server: [typescript-language-server/typescript-language-server](https://github.com/typescript-language-server/typescript-language-server)
-- Debug Adapter: [vscode-js-debug](https://github.com/microsoft/vscode-js-debug)
+- Debug Adapters: [vscode-js-debug](https://github.com/microsoft/vscode-js-debug), [bun-dap-x](https://github.com/korri123/bun-dap-x)
 
 <!--
 TBD: Document the difference between Language servers
@@ -236,7 +236,9 @@ You can override the default code lens settings in your `settings.json`:
 
 ## Debugging
 
-Zed supports debugging TypeScript code out of the box with `vscode-js-debug`.
+Zed supports debugging TypeScript code out of the box with `vscode-js-debug` for
+Node.js and browsers, and `bun-dap-x` for Bun. See [Bun debugging](../debugger.md#bun)
+for launch and attach configurations.
 The following can be debugged without writing additional configuration:
 
 - Tasks from `package.json`

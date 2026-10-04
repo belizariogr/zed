@@ -39,6 +39,96 @@ use workspace::pane_group::SplitDirection;
 use workspace::{Item, dock::Panel, move_active_item};
 
 #[gpui::test]
+async fn test_breakpoint_activates_session_window(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/project"), json!({"main.rs": "fn main() {}"}))
+        .await;
+    let project = Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
+    let other_project = Project::test(fs, [], cx).await;
+    let workspace = init_test_workspace(&project, cx).await;
+    let other_workspace = init_test_workspace(&other_project, cx).await;
+    let cx = &mut VisualTestContext::from_window(*workspace, cx);
+    let session = start_debug_session(&workspace, cx, |client| {
+        client.on_request::<Threads, _>(|_, _| {
+            Ok(dap::ThreadsResponse {
+                threads: vec![dap::Thread {
+                    id: 1,
+                    name: "Main thread".into(),
+                }],
+            })
+        });
+        client.on_request::<StackTrace, _>(|_, _| {
+            Ok(dap::StackTraceResponse {
+                stack_frames: Vec::new(),
+                total_frames: None,
+            })
+        });
+    })
+    .expect("debug session should start");
+    let client = session.update(cx, |session, _| {
+        session.adapter_client().expect("running debug adapter")
+    });
+
+    for (reason, thread_id, preserve_focus_hint, breakpoint_hit) in [
+        (dap::StoppedEventReason::Pause, Some(1), None, false),
+        (dap::StoppedEventReason::Step, Some(1), None, false),
+        (dap::StoppedEventReason::Entry, Some(1), None, false),
+        (dap::StoppedEventReason::Breakpoint, Some(1), None, true),
+        (
+            dap::StoppedEventReason::FunctionBreakpoint,
+            Some(1),
+            None,
+            true,
+        ),
+        (dap::StoppedEventReason::DataBreakpoint, Some(1), None, true),
+        (
+            dap::StoppedEventReason::InstructionBreakpoint,
+            Some(1),
+            None,
+            true,
+        ),
+        (dap::StoppedEventReason::Breakpoint, None, None, true),
+        (
+            dap::StoppedEventReason::Breakpoint,
+            Some(1),
+            Some(true),
+            true,
+        ),
+    ] {
+        other_workspace
+            .update(cx, |_, window, _| window.activate_window())
+            .expect("other workspace window exists");
+        cx.run_until_parked();
+        assert!(!cx.update(|window, _| window.is_window_active()));
+
+        client
+            .fake_event(dap::messages::Events::Stopped(dap::StoppedEvent {
+                reason,
+                description: None,
+                thread_id,
+                preserve_focus_hint,
+                text: None,
+                all_threads_stopped: Some(true),
+                hit_breakpoint_ids: None,
+            }))
+            .await;
+        cx.run_until_parked();
+
+        assert_eq!(
+            cx.update(|window, _| window.is_window_active()),
+            breakpoint_hit
+        );
+        assert_eq!(
+            other_workspace
+                .update(cx, |_, window, _| window.is_window_active())
+                .expect("other workspace window exists"),
+            !breakpoint_hit,
+        );
+    }
+}
+
+#[gpui::test]
 async fn test_basic_show_debug_panel(executor: BackgroundExecutor, cx: &mut TestAppContext) {
     init_test(cx);
 

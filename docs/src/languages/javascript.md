@@ -10,7 +10,7 @@ JavaScript support is available natively in Zed.
 - Tree-sitter: [tree-sitter/tree-sitter-javascript](https://github.com/tree-sitter/tree-sitter-javascript)
 - Language Server: [yioneko/vtsls](https://github.com/yioneko/vtsls)
 - Alternate Language Server: [typescript-language-server/typescript-language-server](https://github.com/typescript-language-server/typescript-language-server)
-- Debug Adapter: [vscode-js-debug](https://github.com/microsoft/vscode-js-debug)
+- Debug Adapters: [vscode-js-debug](https://github.com/microsoft/vscode-js-debug), [bun-dap-x](https://github.com/korri123/bun-dap-x)
 
 ## Code formatting
 
@@ -231,7 +231,9 @@ To get all the features (autocomplete, linting, etc.) from the [Tailwind CSS lan
 
 ## Debugging
 
-Zed supports debugging JavaScript code out of the box with `vscode-js-debug`.
+Zed supports debugging JavaScript code out of the box with `vscode-js-debug` for
+Node.js and browsers, and `bun-dap-x` for Bun. See [Bun debugging](../debugger.md#bun)
+for launch and attach configurations.
 The following can be debugged without writing additional configuration:
 
 - Tasks from `package.json`

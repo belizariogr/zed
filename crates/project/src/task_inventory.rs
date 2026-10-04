@@ -10,7 +10,7 @@ use std::{
 
 use anyhow::Result;
 use collections::{HashMap, HashSet, VecDeque};
-use dap::DapRegistry;
+use dap::{DapRegistry, adapters::DebugAdapterName};
 use gpui::{App, AppContext as _, Context, Entity, SharedString, Task, WeakEntity};
 use itertools::Itertools;
 use language::{
@@ -31,6 +31,16 @@ use worktree::WorktreeId;
 use crate::{git_store::GitStore, task_store::TaskSettingsLocation, worktree_store::WorktreeStore};
 
 pub const GIT_COMMAND_TASK_TAG: &str = "git-command";
+
+fn debug_task_template(task: &ResolvedTask) -> TaskTemplate {
+    let mut template = task.original_task().clone();
+    if template.command == VariableName::Custom(Cow::Borrowed("TYPESCRIPT_RUNNER")).template_value()
+        && let Some(command) = &task.resolved.command
+    {
+        template.command = command.clone();
+    }
+    template
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct DebugScenarioContext {
@@ -357,21 +367,33 @@ impl Inventory {
 
         let last_scheduled_scenarios = self.last_scheduled_scenarios.iter().cloned().collect();
 
-        let adapter = task_contexts.location().and_then(|location| {
+        let adapters = task_contexts.location().map(|location| {
             let buffer = location.buffer.read(cx);
-            let adapter = LanguageSettings::for_buffer(&buffer, cx)
-                .debuggers
-                .first()
-                .map(SharedString::from)
-                .or_else(|| {
-                    buffer
-                        .language()
-                        .and_then(|l| l.config().debuggers.first().map(SharedString::from))
-                });
-            adapter.map(|adapter| (adapter, DapRegistry::global(cx).locators()))
+            let settings = LanguageSettings::for_buffer(&buffer, cx);
+            let adapters: Vec<_> = if settings.debuggers.is_empty() {
+                buffer
+                    .language()
+                    .map(|language| {
+                        language
+                            .config()
+                            .debuggers
+                            .iter()
+                            .cloned()
+                            .map(DebugAdapterName)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                settings
+                    .debuggers
+                    .iter()
+                    .map(|adapter| DebugAdapterName(adapter.clone().into()))
+                    .collect()
+            };
+            (adapters, DapRegistry::global(cx).clone())
         });
         cx.background_spawn(async move {
-            if let Some((adapter, locators)) = adapter {
+            if let Some((adapters, registry)) = adapters {
                 for (kind, task) in
                     lsp_tasks
                         .into_iter()
@@ -380,16 +402,12 @@ impl Inventory {
                                 || !matches!(kind, TaskSourceKind::Language { .. })
                         }))
                 {
-                    let adapter = adapter.clone().into();
-
-                    for locator in locators.values() {
-                        if let Some(scenario) = locator
-                            .create_scenario(task.original_task(), task.display_label(), &adapter)
-                            .await
-                        {
-                            scenarios.push((kind, scenario));
-                            break;
-                        }
+                    let debug_task = debug_task_template(&task);
+                    if let Some(scenario) = registry
+                        .debug_scenario_for_task(&debug_task, task.display_label(), &adapters)
+                        .await
+                    {
+                        scenarios.push((kind, scenario));
                     }
                 }
             }
@@ -1151,6 +1169,50 @@ impl ContextProvider for ContextProviderWithTasks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    async fn package_script_uses_resolved_debug_runtime() {
+        let registry = DapRegistry::default();
+        registry.add_locator(Arc::new(crate::debugger::locators::node::NodeLocator));
+        registry.add_locator(Arc::new(crate::debugger::locators::node::BunLocator));
+        let runner = VariableName::Custom(Cow::Borrowed("TYPESCRIPT_RUNNER"));
+        let template = TaskTemplate {
+            label: "package script".to_owned(),
+            command: runner.template_value(),
+            args: vec!["run".to_owned(), "dev".to_owned()],
+            cwd: Some(VariableName::WorktreeRoot.template_value()),
+            ..TaskTemplate::default()
+        };
+
+        for (runtime, expected_adapter) in [("bun", "Bun"), ("npm", "JavaScript")] {
+            let context = TaskContext {
+                task_variables: [
+                    (runner.clone(), runtime.to_owned()),
+                    (VariableName::WorktreeRoot, "/project".to_owned()),
+                ]
+                .into_iter()
+                .collect(),
+                ..TaskContext::default()
+            };
+            let task = template
+                .resolve_task("debug-script", &context)
+                .expect("Package script should resolve its runner");
+            let debug_task = debug_task_template(&task);
+            assert_eq!(debug_task.cwd, template.cwd);
+            let scenario = registry
+                .debug_scenario_for_task(
+                    &debug_task,
+                    task.display_label(),
+                    &[
+                        DebugAdapterName("JavaScript".into()),
+                        DebugAdapterName("Bun".into()),
+                    ],
+                )
+                .await
+                .expect("Package script should have a matching debug adapter");
+            assert_eq!(scenario.adapter.as_ref(), expected_adapter);
+        }
+    }
 
     fn context_with_greeting(value: &str) -> TaskContext {
         TaskContext {

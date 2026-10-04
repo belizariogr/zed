@@ -109,6 +109,80 @@ All other fields are provided by the debug adapter and can contain [task variabl
 
 Check your debug adapter's documentation for more information on the fields it supports.
 
+### Bun {#bun}
+
+Use the built-in `Bun` adapter to debug JavaScript and TypeScript with Bun. Install
+[Bun](https://bun.sh/docs/installation) version 1.3.14 or newer and make `bun`
+available on your `PATH`. Zed downloads the latest
+[`bun-dap-x`](https://github.com/korri123/bun-dap-x) adapter automatically.
+
+To debug the current file, add this configuration to `.zed/debug.json`:
+
+```json [debug]
+[
+  {
+    "adapter": "Bun",
+    "label": "Debug current file with Bun",
+    "request": "launch",
+    "program": "$ZED_FILE",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "stopOnEntry": false
+  }
+]
+```
+
+Use `args` for program arguments, `runtimeArgs` for Bun options, and `env` for
+environment variables. Set `runtime` to an absolute path if your Bun executable
+is not available on `PATH`.
+
+To debug a test file, set `program` to `test` and pass the file in `args`:
+
+```json [debug]
+[
+  {
+    "adapter": "Bun",
+    "label": "Debug Bun tests in current file",
+    "request": "launch",
+    "program": "test",
+    "args": ["$ZED_FILE"],
+    "cwd": "$ZED_WORKTREE_ROOT"
+  }
+]
+```
+
+The adapter disables Bun test timeouts while debugging. Set `disableTestTimeout`
+to `false` to keep the default timeout, or pass `--timeout` explicitly.
+
+To attach to a running program, start Bun with its inspector enabled:
+
+```sh
+bun --inspect-brk=127.0.0.1:6499 ./src/index.ts
+```
+
+Copy the complete `ws://` URL printed by Bun, including the inspector path, into
+the `url` field:
+
+```json [debug]
+[
+  {
+    "adapter": "Bun",
+    "label": "Attach to Bun",
+    "request": "attach",
+    "url": "ws://127.0.0.1:6499/<inspector-id>"
+  }
+]
+```
+
+Replace `<inspector-id>` with the path printed by your process. You can also use
+`host`, `port`, and `path` instead of `url`. Attaching by process ID or only a port
+is not supported. The `port` field identifies Bun's inspector; `tcp_connection`
+is for connecting to an existing DAP server.
+
+Zed imports `.vscode/launch.json` configurations with `type` set to `bun` or
+`bun-dap-x`. Programs launched by the Bun adapter send output to the debug console
+and cannot read interactive standard input. To debug an interactive program,
+start it in a terminal with `--inspect` and attach using its inspector URL.
+
 ### Build tasks
 
 Zed allows embedding a Zed task in the `build` field that is run before the debugger starts. This is useful for setting up the environment or running any necessary setup steps before the debugger starts.

@@ -11,7 +11,7 @@ brackets = [
 ]
 tab_size = 2
 prettier_parser_name = "json"
-debuggers = ["JavaScript"]
+debuggers = ["JavaScript", "Bun"]
 word_characters = ["#"]
 
 [overrides.string]

@@ -32,7 +32,7 @@ impl ModuleList {
         let focus_handle = cx.focus_handle();
 
         let _subscription = cx.subscribe(&session, |this, _, event, cx| match event {
-            SessionEvent::Stopped(_)
+            SessionEvent::Stopped { .. }
             | SessionEvent::HistoricSnapshotSelected
             | SessionEvent::Modules => {
                 if this._rebuild_task.is_some() {

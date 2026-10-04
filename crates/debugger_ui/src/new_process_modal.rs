@@ -1327,13 +1327,19 @@ impl PickerDelegate for DebugDelegate {
         };
 
         let args = args.collect::<Vec<_>>();
-        let task = task::TaskTemplate {
+        let mut task = task::TaskTemplate {
             label: "one-off".to_owned(), // TODO: rename using command as label
             env,
             command: program,
             args,
             ..Default::default()
         };
+        if task.command == VariableName::Custom(Cow::Borrowed("TYPESCRIPT_RUNNER")).template_value()
+            && let Some(resolved_task) = task.resolve_task("debug-one-off", &task_context)
+            && let Some(command) = resolved_task.resolved.command
+        {
+            task.command = command;
+        }
 
         let Some(location) = self
             .task_contexts
@@ -1343,41 +1349,34 @@ impl PickerDelegate for DebugDelegate {
             return;
         };
         let buffer = location.buffer.read(cx);
-        let language = buffer.language();
-        let Some(adapter): Option<DebugAdapterName> =
-            language::language_settings::LanguageSettings::for_buffer(buffer, cx)
-                .debuggers
-                .first()
-                .map(SharedString::from)
-                .map(Into::into)
-                .or_else(|| {
-                    language.and_then(|l| {
-                        l.config()
-                            .debuggers
-                            .first()
-                            .map(SharedString::from)
-                            .map(Into::into)
-                    })
+        let settings = language::language_settings::LanguageSettings::for_buffer(buffer, cx);
+        let adapters: Vec<_> = if settings.debuggers.is_empty() {
+            buffer
+                .language()
+                .map(|language| {
+                    language
+                        .config()
+                        .debuggers
+                        .iter()
+                        .cloned()
+                        .map(DebugAdapterName)
+                        .collect()
                 })
-        else {
-            return;
+                .unwrap_or_default()
+        } else {
+            settings
+                .debuggers
+                .iter()
+                .map(|adapter| DebugAdapterName(adapter.clone().into()))
+                .collect()
         };
-        let locators = cx.global::<DapRegistry>().locators();
+        let registry = cx.global::<DapRegistry>().clone();
         cx.spawn_in(window, async move |this, cx| {
             let Some(debug_scenario) = cx
                 .background_spawn(async move {
-                    for locator in locators {
-                        if let Some(scenario) =
-                            // TODO: use a more informative label than "one-off"
-                            locator
-                                .1
-                                .create_scenario(&task, &task.label, &adapter)
-                                .await
-                        {
-                            return Some(scenario);
-                        }
-                    }
-                    None
+                    registry
+                        .debug_scenario_for_task(&task, &task.label, &adapters)
+                        .await
                 })
                 .await
             else {

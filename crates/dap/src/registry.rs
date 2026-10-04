@@ -87,11 +87,125 @@ impl DapRegistry {
         self.0.read().locators.clone()
     }
 
+    pub async fn debug_scenario_for_task(
+        &self,
+        task: &TaskTemplate,
+        label: &str,
+        adapters: &[DebugAdapterName],
+    ) -> Option<DebugScenario> {
+        let locators = self.locators();
+        for adapter in adapters {
+            for locator in locators.values() {
+                if let Some(scenario) = locator.create_scenario(task, label, adapter).await {
+                    return Some(scenario);
+                }
+            }
+        }
+        None
+    }
+
     pub fn adapter(&self, name: &str) -> Option<Arc<dyn DebugAdapter>> {
         self.0.read().adapters.get(name).cloned()
     }
 
     pub fn enumerate_adapters<B: FromIterator<DebugAdapterName>>(&self) -> B {
         self.0.read().adapters.keys().cloned().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestLocator {
+        adapter: DebugAdapterName,
+        command: &'static str,
+    }
+
+    #[async_trait]
+    impl DapLocator for TestLocator {
+        fn name(&self) -> SharedString {
+            self.adapter.0.clone()
+        }
+
+        async fn create_scenario(
+            &self,
+            task: &TaskTemplate,
+            label: &str,
+            adapter: &DebugAdapterName,
+        ) -> Option<DebugScenario> {
+            if adapter != &self.adapter || task.command != self.command {
+                return None;
+            }
+            Some(DebugScenario {
+                adapter: adapter.0.clone(),
+                label: label.to_owned().into(),
+                build: None,
+                config: serde_json::json!({"request": "launch", "program": task.command}),
+                tcp_connection: None,
+            })
+        }
+
+        async fn run(&self, _: SpawnInTerminal, _: BackgroundExecutor) -> Result<DebugRequest> {
+            anyhow::bail!("Test locator does not run build tasks")
+        }
+    }
+
+    #[gpui::test]
+    async fn debug_scenario_for_task_falls_back_to_matching_adapter() {
+        let registry = DapRegistry::default();
+        registry.add_locator(Arc::new(TestLocator {
+            adapter: DebugAdapterName("JavaScript".into()),
+            command: "npm",
+        }));
+        registry.add_locator(Arc::new(TestLocator {
+            adapter: DebugAdapterName("Bun".into()),
+            command: "bun",
+        }));
+
+        for (command, expected_adapter) in [("npm", "JavaScript"), ("bun", "Bun")] {
+            let task = TaskTemplate {
+                command: command.to_owned(),
+                ..TaskTemplate::default()
+            };
+            let scenario = registry
+                .debug_scenario_for_task(
+                    &task,
+                    "Debug task",
+                    &[
+                        DebugAdapterName("JavaScript".into()),
+                        DebugAdapterName("Bun".into()),
+                    ],
+                )
+                .await
+                .expect("A matching adapter should produce a scenario");
+            assert_eq!(scenario.adapter.as_ref(), expected_adapter);
+        }
+    }
+
+    #[gpui::test]
+    async fn debug_scenario_for_task_preserves_adapter_preference() {
+        let registry = DapRegistry::default();
+        for adapter in ["first", "second"] {
+            registry.add_locator(Arc::new(TestLocator {
+                adapter: DebugAdapterName(adapter.into()),
+                command: "runtime",
+            }));
+        }
+        let task = TaskTemplate {
+            command: "runtime".to_owned(),
+            ..TaskTemplate::default()
+        };
+        for adapters in [["first", "second"], ["second", "first"]] {
+            let scenario = registry
+                .debug_scenario_for_task(
+                    &task,
+                    "Debug task",
+                    &adapters.map(|adapter| DebugAdapterName(adapter.into())),
+                )
+                .await
+                .expect("Both adapters should match the task");
+            assert_eq!(scenario.adapter.as_ref(), adapters[0]);
+        }
     }
 }

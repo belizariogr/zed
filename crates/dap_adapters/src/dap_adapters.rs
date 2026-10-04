@@ -1,3 +1,4 @@
+mod bun;
 mod codelldb;
 mod gdb;
 mod go;
@@ -10,6 +11,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use bun::BunDebugAdapter;
 use codelldb::CodeLldbDebugAdapter;
 use dap::{
     DapRegistry,
@@ -31,6 +33,7 @@ pub fn init(cx: &mut App) {
         registry.add_adapter(Arc::from(CodeLldbDebugAdapter::default()));
         registry.add_adapter(Arc::from(PythonDebugAdapter::default()));
         registry.add_adapter(Arc::from(JsDebugAdapter::default()));
+        registry.add_adapter(Arc::from(BunDebugAdapter::default()));
         registry.add_adapter(Arc::from(GoDebugAdapter::default()));
         registry.add_adapter(Arc::from(GdbDebugAdapter));
 
@@ -44,15 +47,31 @@ pub fn init(cx: &mut App) {
 #[cfg(test)]
 mod test_mocks {
     use super::*;
+    use collections::HashMap;
 
     pub(crate) struct MockDelegate {
         worktree_root: PathBuf,
+        commands: HashMap<std::ffi::OsString, PathBuf>,
+        shell_env: HashMap<String, String>,
     }
 
     impl MockDelegate {
         pub(crate) fn new() -> Arc<dyn adapters::DapDelegate> {
             Arc::new(Self {
                 worktree_root: PathBuf::from("/tmp/test"),
+                commands: HashMap::default(),
+                shell_env: HashMap::default(),
+            })
+        }
+
+        pub(crate) fn with_commands_and_env(
+            commands: HashMap<std::ffi::OsString, PathBuf>,
+            shell_env: HashMap<String, String>,
+        ) -> Arc<dyn adapters::DapDelegate> {
+            Arc::new(Self {
+                worktree_root: PathBuf::from("/tmp/test"),
+                commands,
+                shell_env,
             })
         }
     }
@@ -85,8 +104,8 @@ mod test_mocks {
 
         fn output_to_console(&self, _msg: String) {}
 
-        async fn which(&self, _command: &std::ffi::OsStr) -> Option<PathBuf> {
-            None
+        async fn which(&self, command: &std::ffi::OsStr) -> Option<PathBuf> {
+            self.commands.get(command).cloned()
         }
 
         async fn read_text_file(&self, _path: &util::rel_path::RelPath) -> Result<String> {
@@ -94,7 +113,7 @@ mod test_mocks {
         }
 
         async fn shell_env(&self) -> collections::HashMap<String, String> {
-            collections::HashMap::default()
+            self.shell_env.clone()
         }
 
         fn is_headless(&self) -> bool {

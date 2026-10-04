@@ -25,7 +25,7 @@ use breakpoint_list::BreakpointList;
 use collections::{HashMap, IndexMap};
 use console::Console;
 use dap::{
-    Capabilities, DapRegistry, RunInTerminalRequestArguments, Thread,
+    Capabilities, DapRegistry, RunInTerminalRequestArguments, StoppedEventReason, Thread,
     adapters::{DebugAdapterName, DebugTaskDefinition},
     client::SessionId,
     debugger_settings::DebuggerSettings,
@@ -888,7 +888,18 @@ impl RunningState {
             cx.observe(&module_list, |_, _, cx| cx.notify()),
             cx.subscribe_in(&session, window, |this, _, event, window, cx| {
                 match event {
-                    SessionEvent::Stopped(thread_id) => {
+                    SessionEvent::Stopped { thread_id, reason } => {
+                        if matches!(
+                            reason,
+                            StoppedEventReason::Breakpoint
+                                | StoppedEventReason::FunctionBreakpoint
+                                | StoppedEventReason::DataBreakpoint
+                                | StoppedEventReason::InstructionBreakpoint
+                        ) && !window.is_window_active()
+                        {
+                            cx.activate(true);
+                            window.activate_window();
+                        }
                         let panel = this
                             .workspace
                             .update(cx, |workspace, cx| {

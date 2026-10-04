@@ -362,6 +362,7 @@ async fn test_dap_adapter_config_conversion_and_validation(cx: &mut TestAppConte
     init_test(cx);
 
     let mut expected_adapters = vec![
+        "Bun",
         "CodeLLDB",
         "Debugpy",
         "JavaScript",
