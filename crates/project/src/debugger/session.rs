@@ -815,7 +815,9 @@ pub enum SessionEvent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionStateEvent {
     Running,
-    Shutdown,
+    Shutdown {
+        terminate_debuggee: bool,
+    },
     Restart,
     SpawnChildSession {
         request: StartDebuggingRequestArguments,
@@ -1548,7 +1550,7 @@ impl Session {
                 self.clear_active_debug_line(cx);
             }
             Events::Terminated(_) => {
-                self.shutdown(cx).detach();
+                self.disconnect(cx).detach();
             }
             Events::Thread(event) => {
                 let thread_id = ThreadId(event.thread_id);
@@ -2248,6 +2250,18 @@ impl Session {
     }
 
     pub fn shutdown(&mut self, cx: &mut Context<Self>) -> Task<()> {
+        self.shutdown_adapter(true, cx)
+    }
+
+    pub fn disconnect(&mut self, cx: &mut Context<Self>) -> Task<()> {
+        self.shutdown_adapter(false, cx)
+    }
+
+    pub(super) fn shutdown_adapter(
+        &mut self,
+        terminate_debuggee: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
         if self.is_session_terminated {
             return Task::ready(());
         }
@@ -2258,10 +2272,11 @@ impl Session {
 
         let task = match &mut self.state {
             SessionState::Running(_) => {
-                if self
-                    .capabilities
-                    .supports_terminate_request
-                    .unwrap_or_default()
+                if terminate_debuggee
+                    && self
+                        .capabilities
+                        .supports_terminate_request
+                        .unwrap_or_default()
                 {
                     self.request(
                         TerminateCommand {
@@ -2274,7 +2289,7 @@ impl Session {
                     self.request(
                         DisconnectCommand {
                             restart: Some(false),
-                            terminate_debuggee: Some(true),
+                            terminate_debuggee: Some(terminate_debuggee),
                             suspend_debuggee: Some(false),
                         },
                         Self::clear_active_debug_line_response,
@@ -2288,15 +2303,16 @@ impl Session {
             }
         };
 
-        cx.emit(SessionStateEvent::Shutdown);
+        cx.emit(SessionStateEvent::Shutdown { terminate_debuggee });
 
         cx.spawn(async move |this, cx| {
             task.await;
-            let _ = this.update(cx, |this, _| {
+            this.update(cx, |this, _| {
                 if let Some(adapter_client) = this.adapter_client() {
                     adapter_client.kill();
                 }
-            });
+            })
+            .log_err();
         })
     }
 

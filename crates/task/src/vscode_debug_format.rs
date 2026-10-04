@@ -7,15 +7,58 @@ use crate::{
 };
 
 // TODO support preLaunchTask linkage with other tasks
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq)]
 struct VsCodeDebugTaskDefinition {
     r#type: String,
     name: String,
-    #[serde(default)]
     port: Option<u16>,
-    #[serde(flatten)]
     other_attributes: serde_json::Value,
+}
+
+impl<'de> Deserialize<'de> for VsCodeDebugTaskDefinition {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Definition {
+            r#type: String,
+            name: String,
+            #[serde(default)]
+            port: Option<u16>,
+            #[serde(flatten)]
+            other_attributes: serde_json::Value,
+        }
+
+        let mut configuration = serde_json::Value::deserialize(deserializer)?;
+        apply_platform_overrides(&mut configuration, std::env::consts::OS);
+        let definition: Definition =
+            serde_json::from_value(configuration).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            r#type: definition.r#type,
+            name: definition.name,
+            port: definition.port,
+            other_attributes: definition.other_attributes,
+        })
+    }
+}
+
+fn apply_platform_overrides(configuration: &mut serde_json::Value, operating_system: &str) {
+    let Some(configuration) = configuration.as_object_mut() else {
+        return;
+    };
+    let overrides = match operating_system {
+        "macos" => configuration.remove("osx"),
+        "windows" | "linux" => configuration.remove(operating_system),
+        _ => None,
+    };
+    for platform in ["windows", "linux", "osx"] {
+        configuration.remove(platform);
+    }
+    if let Some(serde_json::Value::Object(overrides)) = overrides {
+        configuration.extend(overrides);
+    }
 }
 
 impl VsCodeDebugTaskDefinition {
@@ -103,7 +146,113 @@ mod tests {
 
     use crate::{DebugScenario, DebugTaskFile, VariableName};
 
-    use super::VsCodeDebugTaskFile;
+    use super::{VsCodeDebugTaskFile, apply_platform_overrides};
+
+    #[test]
+    fn test_platform_overrides_replace_properties() {
+        for (operating_system, platform) in
+            [("windows", "windows"), ("linux", "linux"), ("macos", "osx")]
+        {
+            let mut configuration = json!({
+                "request": "launch",
+                "runtimeExecutable": "default-browser",
+                "runtimeArgs": ["--default"],
+                "env": {"BASE": "base"},
+                "windows": {"runtimeExecutable": "windows-browser"},
+                "linux": {"runtimeExecutable": "linux-browser"},
+                "osx": {"runtimeExecutable": "osx-browser"},
+            });
+            configuration[platform]["runtimeArgs"] = json!(["--platform"]);
+            configuration[platform]["env"] = json!({"PLATFORM": "platform"});
+            apply_platform_overrides(&mut configuration, operating_system);
+            assert_eq!(
+                configuration,
+                json!({
+                    "request": "launch",
+                    "runtimeExecutable": format!("{platform}-browser"),
+                    "runtimeArgs": ["--platform"],
+                    "env": {"PLATFORM": "platform"},
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn test_missing_platform_override_preserves_defaults() {
+        let mut configuration = json!({
+            "runtimeExecutable": "default-browser",
+            "runtimeArgs": ["--default"],
+            "windows": {"runtimeExecutable": "windows-browser"},
+        });
+        apply_platform_overrides(&mut configuration, "linux");
+        assert_eq!(
+            configuration,
+            json!({"runtimeExecutable": "default-browser", "runtimeArgs": ["--default"]})
+        );
+    }
+
+    #[test]
+    fn test_platform_specific_launch_options() -> anyhow::Result<()> {
+        let parsed: VsCodeDebugTaskFile = serde_json::from_value(json!({
+            "configurations": [{
+                "name": "Launch Chrome",
+                "type": "chrome",
+                "request": "launch",
+                "url": "http://localhost:3000/",
+                "webRoot": "${workspaceFolder}",
+                "runtimeExecutable": "default-browser",
+                "runtimeArgs": ["--default"],
+                "port": 9222,
+                "windows": {
+                    "runtimeExecutable": "C:\\Chromium\\chrome.exe",
+                    "runtimeArgs": ["--user-data-dir=C:\\Chrome Dev"],
+                    "port": 9223,
+                },
+                "linux": {
+                    "runtimeExecutable": "/usr/bin/chromium",
+                    "runtimeArgs": ["--user-data-dir=${workspaceFolder}/chrome-dev"],
+                    "port": 9224,
+                },
+                "osx": {
+                    "runtimeExecutable": "/Applications/Chromium.app/Contents/MacOS/Chromium",
+                    "runtimeArgs": ["--user-data-dir=${workspaceFolder}/chrome-dev"],
+                    "port": 9225,
+                },
+            }],
+        }))?;
+        let scenarios = DebugTaskFile::try_from(parsed)?;
+        let scenario = scenarios
+            .0
+            .first()
+            .expect("Chrome configuration should convert");
+        let (executable, arguments, port) = if cfg!(target_os = "windows") {
+            (
+                "C:\\Chromium\\chrome.exe",
+                json!(["--user-data-dir=C:\\Chrome Dev"]),
+                9223,
+            )
+        } else if cfg!(target_os = "macos") {
+            (
+                "/Applications/Chromium.app/Contents/MacOS/Chromium",
+                json!(["--user-data-dir=${ZED_WORKTREE_ROOT}/chrome-dev"]),
+                9225,
+            )
+        } else {
+            (
+                "/usr/bin/chromium",
+                json!(["--user-data-dir=${ZED_WORKTREE_ROOT}/chrome-dev"]),
+                9224,
+            )
+        };
+        assert_eq!(scenario.config["runtimeExecutable"], executable);
+        assert_eq!(scenario.config["runtimeArgs"], arguments);
+        assert_eq!(scenario.config["port"], port);
+        assert_eq!(scenario.config["webRoot"], "${ZED_WORKTREE_ROOT}");
+        for platform in ["windows", "linux", "osx"] {
+            assert!(scenario.config.get(platform).is_none());
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_parsing_vscode_launch_json() {

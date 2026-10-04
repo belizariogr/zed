@@ -951,7 +951,7 @@ impl RunningState {
             cx.subscribe(
                 &session,
                 |this, session, event: &SessionStateEvent, cx| match event {
-                    SessionStateEvent::Shutdown if session.read(cx).is_building() => {
+                    SessionStateEvent::Shutdown { .. } if session.read(cx).is_building() => {
                         this.shutdown(cx);
                     }
                     _ => {}

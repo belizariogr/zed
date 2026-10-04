@@ -11,7 +11,7 @@ use dap::{
     client::SessionId,
     requests::{
         Continue, Disconnect, Launch, Next, RunInTerminal, SetBreakpoints, StackTrace,
-        StartDebugging, StepBack, StepIn, StepOut, Threads,
+        StartDebugging, StepBack, StepIn, StepOut, Terminate, Threads,
     },
 };
 use editor::{
@@ -862,7 +862,7 @@ async fn test_shutdown_children_when_parent_session_shutdown(
 }
 
 #[gpui::test]
-async fn test_shutdown_parent_session_if_all_children_are_shutdown(
+async fn test_parent_session_survives_all_children_shutting_down(
     executor: BackgroundExecutor,
     cx: &mut TestAppContext,
 ) {
@@ -957,7 +957,6 @@ async fn test_shutdown_parent_session_if_all_children_are_shutdown(
         );
     });
 
-    // shutdown first child session
     dap_store
         .update(cx, |dap_store, cx| {
             dap_store.shutdown_session(second_child_session.read(cx).session_id(), cx)
@@ -965,20 +964,27 @@ async fn test_shutdown_parent_session_if_all_children_are_shutdown(
         .await
         .unwrap();
 
-    // assert parent session got shutdown by second child session
-    // because it was the last child
     dap_store.update(cx, |dap_store, cx| {
         assert!(
             dap_store
                 .session_by_id(parent_session.read(cx).session_id())
-                .is_none()
+                .is_some()
         );
         assert!(
             dap_store
                 .session_by_id(second_child_session.read(cx).session_id())
                 .is_none()
         );
+        assert!(!parent_session.read(cx).is_terminated());
+        assert!(parent_session.read(cx).child_session_ids().is_empty());
     });
+
+    dap_store
+        .update(cx, |dap_store, cx| {
+            dap_store.shutdown_session(parent_session.read(cx).session_id(), cx)
+        })
+        .await
+        .expect("explicit parent shutdown should succeed");
 }
 
 #[gpui::test]
@@ -1613,24 +1619,37 @@ async fn test_debug_session_is_shutdown_when_attach_and_launch_request_fails(
     let workspace = init_test_workspace(&project, cx).await;
     let cx = &mut VisualTestContext::from_window(*workspace, cx);
 
-    start_debug_session(&workspace, cx, |client| {
-        client.on_request::<dap::requests::Initialize, _>(|_, _| {
-            Err(ErrorResponse {
-                error: Some(Message {
-                    format: "failed to launch".to_string(),
-                    id: 1,
-                    variables: None,
-                    send_telemetry: None,
-                    show_user: None,
-                    url: None,
-                    url_label: None,
-                }),
-            })
-        });
-    })
-    .ok();
+    let disconnected = Arc::new(AtomicBool::new(false));
+    let result = start_debug_session(&workspace, cx, {
+        let disconnected = disconnected.clone();
+        move |client| {
+            let disconnected = disconnected.clone();
+            client.on_request::<Disconnect, _>(move |_, arguments| {
+                assert_eq!(arguments.terminate_debuggee, Some(false));
+                disconnected.store(true, Ordering::SeqCst);
+                Ok(())
+            });
+            client.on_request::<dap::requests::Initialize, _>(|_, _| {
+                Err(ErrorResponse {
+                    error: Some(Message {
+                        format: "failed to launch".to_string(),
+                        id: 1,
+                        variables: None,
+                        send_telemetry: None,
+                        show_user: None,
+                        url: None,
+                        url_label: None,
+                    }),
+                })
+            });
+        }
+    });
+    if let Ok(session) = result {
+        assert!(session.read_with(cx, |session, _| session.is_terminated()));
+    }
 
     cx.run_until_parked();
+    assert!(disconnected.load(Ordering::SeqCst));
 
     project.update(cx, |project, cx| {
         assert!(
@@ -2570,6 +2589,223 @@ async fn test_breakpoint_jumps_only_in_proper_split_view(
     });
 
     shutdown_session.await.unwrap();
+}
+
+#[gpui::test]
+async fn test_terminated_event_disconnects_without_terminating_debuggee(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/project"), json!({"main.js": ""}))
+        .await;
+    let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+    let workspace = init_test_workspace(&project, cx).await;
+    let cx = &mut VisualTestContext::from_window(*workspace, cx);
+
+    for supports_terminate_request in [false, true] {
+        let disconnected = Arc::new(AtomicBool::new(false));
+        let session = start_debug_session(&workspace, cx, {
+            let disconnected = disconnected.clone();
+            move |client| {
+                client.on_request::<dap::requests::Initialize, _>(move |_, _| {
+                    Ok(dap::Capabilities {
+                        supports_terminate_request: Some(supports_terminate_request),
+                        ..Default::default()
+                    })
+                });
+                let disconnected = disconnected.clone();
+                client.on_request::<Disconnect, _>(move |_, arguments| {
+                    assert_eq!(arguments.terminate_debuggee, Some(false));
+                    disconnected.store(true, Ordering::SeqCst);
+                    Ok(())
+                });
+                client.on_request::<Terminate, _>(|_, _| {
+                    panic!("A terminated event must not trigger a terminate request")
+                });
+            }
+        })
+        .expect("debug session should start");
+        let client = session.update(cx, |session, _| {
+            session.adapter_client().expect("running debug adapter")
+        });
+
+        client
+            .fake_event(dap::messages::Events::Terminated(Some(
+                dap::TerminatedEvent { restart: None },
+            )))
+            .await;
+        cx.run_until_parked();
+
+        assert!(disconnected.load(Ordering::SeqCst));
+        project.read_with(cx, |project, cx| {
+            assert!(session.read(cx).is_terminated());
+            assert!(
+                project
+                    .dap_store()
+                    .read(cx)
+                    .session_by_id(session.read(cx).session_id())
+                    .is_none()
+            );
+        });
+    }
+}
+
+#[gpui::test]
+async fn test_last_child_termination_allows_new_child_session(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/project"), json!({"main.js": ""}))
+        .await;
+    let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+    let workspace = init_test_workspace(&project, cx).await;
+    let cx = &mut VisualTestContext::from_window(*workspace, cx);
+    let parent_session =
+        start_debug_session(&workspace, cx, |_| {}).expect("parent debug session should start");
+    let parent_session_id = cx.read(|cx| parent_session.read(cx).session_id());
+    let parent_client = parent_session.update(cx, |session, _| {
+        session.adapter_client().expect("running parent adapter")
+    });
+    parent_client.on_request::<Disconnect, _>(|_, _| {
+        panic!("Ending a child session must not disconnect the parent")
+    });
+    parent_client.on_response::<StartDebugging, _>(|_| {}).await;
+    let _subscription = project::debugger::test::intercept_debug_sessions(cx, |_| {});
+
+    for child_session_id in [SessionId(1), SessionId(2)] {
+        parent_client
+            .fake_reverse_request::<StartDebugging>(StartDebuggingRequestArguments {
+                configuration: json!({"type": "pwa-chrome"}),
+                request: StartDebuggingRequestArgumentsRequest::Launch,
+            })
+            .await;
+        cx.run_until_parked();
+
+        let child_session = project.read_with(cx, |project, cx| {
+            project
+                .dap_store()
+                .read(cx)
+                .session_by_id(child_session_id)
+                .expect("new child session should start")
+        });
+        child_session.read_with(cx, |session, cx| {
+            assert!(!session.is_terminated());
+            assert_eq!(session.parent_id(cx), Some(parent_session_id));
+        });
+        let child_client = child_session.update(cx, |session, _| {
+            session.adapter_client().expect("running child adapter")
+        });
+        child_client
+            .fake_event(dap::messages::Events::Terminated(None))
+            .await;
+        cx.run_until_parked();
+
+        project.read_with(cx, |project, cx| {
+            let store = project.dap_store().read(cx);
+            assert!(store.session_by_id(child_session_id).is_none());
+            assert!(store.session_by_id(parent_session_id).is_some());
+            assert!(!parent_session.read(cx).is_terminated());
+            assert!(parent_session.read(cx).child_session_ids().is_empty());
+        });
+    }
+
+    parent_client.on_request::<Disconnect, _>(|_, arguments| {
+        assert_eq!(arguments.terminate_debuggee, Some(true));
+        Ok(())
+    });
+    project
+        .update(cx, |project, cx| {
+            project.dap_store().update(cx, |store, cx| {
+                store.shutdown_session(parent_session_id, cx)
+            })
+        })
+        .await
+        .expect("explicit parent shutdown should succeed");
+    assert!(parent_session.read_with(cx, |session, _| session.is_terminated()));
+}
+
+#[gpui::test]
+async fn test_terminated_parent_disconnects_children_without_terminating_debuggee(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/project"), json!({"main.js": ""}))
+        .await;
+    let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+    let workspace = init_test_workspace(&project, cx).await;
+    let cx = &mut VisualTestContext::from_window(*workspace, cx);
+    let parent_session =
+        start_debug_session(&workspace, cx, |_| {}).expect("parent debug session should start");
+    let parent_session_id = cx.read(|cx| parent_session.read(cx).session_id());
+    let parent_client = parent_session.update(cx, |session, _| {
+        session.adapter_client().expect("running parent adapter")
+    });
+    parent_client.on_request::<Disconnect, _>(|_, _| {
+        panic!("Ending a child session must not disconnect the root session")
+    });
+    parent_client.on_response::<StartDebugging, _>(|_| {}).await;
+    let disconnected = Arc::new(AtomicUsize::new(0));
+    let _subscription = project::debugger::test::intercept_debug_sessions(cx, {
+        let disconnected = disconnected.clone();
+        move |client| {
+            let disconnected = disconnected.clone();
+            client.on_request::<Disconnect, _>(move |_, arguments| {
+                assert_eq!(arguments.terminate_debuggee, Some(false));
+                disconnected.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            });
+        }
+    });
+
+    parent_client
+        .fake_reverse_request::<StartDebugging>(StartDebuggingRequestArguments {
+            configuration: json!({}),
+            request: StartDebuggingRequestArgumentsRequest::Launch,
+        })
+        .await;
+    cx.run_until_parked();
+    let child_session = project.read_with(cx, |project, cx| {
+        project
+            .dap_store()
+            .read(cx)
+            .session_by_id(SessionId(1))
+            .expect("child session should start")
+    });
+    let child_client = child_session.update(cx, |session, _| {
+        session.adapter_client().expect("running child adapter")
+    });
+    child_client.on_response::<StartDebugging, _>(|_| {}).await;
+    child_client
+        .fake_reverse_request::<StartDebugging>(StartDebuggingRequestArguments {
+            configuration: json!({}),
+            request: StartDebuggingRequestArgumentsRequest::Launch,
+        })
+        .await;
+    cx.run_until_parked();
+
+    child_client
+        .fake_event(dap::messages::Events::Terminated(None))
+        .await;
+    cx.run_until_parked();
+
+    assert_eq!(disconnected.load(Ordering::SeqCst), 2);
+    project.read_with(cx, |project, cx| {
+        let store = project.dap_store().read(cx);
+        assert!(store.session_by_id(SessionId(1)).is_none());
+        assert!(store.session_by_id(SessionId(2)).is_none());
+        assert!(store.session_by_id(parent_session_id).is_some());
+        assert!(!parent_session.read(cx).is_terminated());
+        assert!(parent_session.read(cx).child_session_ids().is_empty());
+    });
+
+    parent_client.on_request::<Disconnect, _>(|_, _| Ok(()));
+    project
+        .update(cx, |project, cx| {
+            project.dap_store().update(cx, |store, cx| {
+                store.shutdown_session(parent_session_id, cx)
+            })
+        })
+        .await
+        .expect("explicit parent shutdown should succeed");
 }
 
 #[gpui::test]

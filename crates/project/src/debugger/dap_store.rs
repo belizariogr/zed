@@ -493,8 +493,11 @@ impl DapStore {
 
         cx.subscribe(&session, {
             move |this: &mut DapStore, _, event: &SessionStateEvent, cx| match event {
-                SessionStateEvent::Shutdown => {
-                    this.shutdown_session(session_id, cx).detach_and_log_err(cx);
+                SessionStateEvent::Shutdown { terminate_debuggee } => {
+                    if this.sessions.contains_key(&session_id) {
+                        this.shutdown_session_with_options(session_id, *terminate_debuggee, cx)
+                            .detach_and_log_err(cx);
+                    }
                 }
                 SessionStateEvent::Restart | SessionStateEvent::SpawnChildSession { .. } => {}
                 SessionStateEvent::Running => {
@@ -740,6 +743,15 @@ impl DapStore {
         session_id: SessionId,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        self.shutdown_session_with_options(session_id, true, cx)
+    }
+
+    fn shutdown_session_with_options(
+        &mut self,
+        session_id: SessionId,
+        terminate_debuggee: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         let Some(session) = self.sessions.remove(&session_id) else {
             return Task::ready(Err(anyhow!("Could not find session: {:?}", session_id)));
         };
@@ -748,42 +760,33 @@ impl DapStore {
             .read(cx)
             .child_session_ids()
             .iter()
-            .map(|session_id| self.shutdown_session(*session_id, cx))
+            .map(|session_id| {
+                self.shutdown_session_with_options(*session_id, terminate_debuggee, cx)
+            })
             .collect::<Vec<_>>();
 
-        let shutdown_parent_task = if let Some(parent_session) = session
+        if let Some(parent_session) = session
             .read(cx)
             .parent_id(cx)
             .and_then(|session_id| self.session_by_id(session_id))
         {
-            let shutdown_id = parent_session.update(cx, |parent_session, _| {
+            // The parent can accept new targets after its last child exits, e.g. Chrome tabs.
+            parent_session.update(cx, |parent_session, _| {
                 parent_session.remove_child_session_id(session_id);
-
-                if parent_session.child_session_ids().is_empty() {
-                    Some(parent_session.session_id())
-                } else {
-                    None
-                }
             });
+        }
 
-            shutdown_id.map(|session_id| self.shutdown_session(session_id, cx))
-        } else {
-            None
-        };
-
-        let shutdown_task = session.update(cx, |this, cx| this.shutdown(cx));
+        let shutdown_task =
+            session.update(cx, |this, cx| this.shutdown_adapter(terminate_debuggee, cx));
 
         cx.emit(DapStoreEvent::DebugClientShutdown(session_id));
 
         cx.background_spawn(async move {
-            if !shutdown_children.is_empty() {
-                let _ = join_all(shutdown_children).await;
-            }
-
+            let child_results = join_all(shutdown_children).await;
             shutdown_task.await;
 
-            if let Some(parent_task) = shutdown_parent_task {
-                parent_task.await?;
+            for result in child_results {
+                result?;
             }
 
             Ok(())

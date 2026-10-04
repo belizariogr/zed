@@ -291,7 +291,7 @@ impl DebugPanel {
                                 .console_output(cx)
                                 .unbounded_send(format!("error: {:#}", redacted_error))
                                 .ok();
-                            session.shutdown(cx)
+                            session.disconnect(cx)
                         })
                         .await;
                 }
@@ -423,7 +423,7 @@ impl DebugPanel {
                                 error
                             ))
                             .ok();
-                        session.shutdown(cx)
+                        session.disconnect(cx)
                     })
                     .await;
 

@@ -79,6 +79,7 @@ impl JsDebugAdapter {
             });
 
             configuration.entry("type").and_modify(normalize_task_type);
+            configure_browser_lifecycle(configuration).await?;
 
             if let Some(program) = configuration
                 .get("program")
@@ -566,4 +567,99 @@ fn normalize_task_type(task_type: &mut Value) {
     .to_owned();
 
     *task_type = Value::String(new_name);
+}
+
+async fn configure_browser_lifecycle(
+    configuration: &mut serde_json::Map<String, Value>,
+) -> Result<()> {
+    if configuration.get("request").and_then(Value::as_str) != Some("launch")
+        || !matches!(
+            configuration.get("type").and_then(Value::as_str),
+            Some("pwa-chrome" | "pwa-msedge")
+        )
+    {
+        return Ok(());
+    }
+
+    // Otherwise js-debug closes every tab when the last target matching urlFilter exits.
+    configuration
+        .entry("cleanUp")
+        .or_insert_with(|| "onlyTab".into());
+
+    if !configuration.contains_key("port") {
+        // js-debug cannot reconnect a browser launched over its default debugging pipe.
+        let port =
+            dap::transport::TcpTransport::unused_port(std::net::Ipv4Addr::LOCALHOST.into()).await?;
+        configuration.insert("port".to_owned(), port.into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn browser_launch_preserves_unrelated_tabs_and_uses_a_reconnectable_connection() -> Result<()> {
+        smol::block_on(async {
+            for task_type in ["pwa-chrome", "pwa-msedge"] {
+                let mut configuration = serde_json::Map::from_iter([
+                    ("type".to_owned(), task_type.into()),
+                    ("request".to_owned(), "launch".into()),
+                ]);
+                configure_browser_lifecycle(&mut configuration).await?;
+                assert_eq!(configuration.get("cleanUp"), Some(&json!("onlyTab")));
+                let port = configuration
+                    .get("port")
+                    .and_then(Value::as_u64)
+                    .context("browser launch must select a debugging port")?;
+                assert!((1..=u16::MAX as u64).contains(&port));
+            }
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn browser_lifecycle_preserves_explicit_options_and_other_targets() -> Result<()> {
+        smol::block_on(async {
+            for mut configuration in [
+                json!({"type": "pwa-chrome", "request": "launch", "port": 9222, "cleanUp": "wholeBrowser"}),
+                json!({"type": "pwa-msedge", "request": "launch", "port": 9222, "cleanUp": "onlyTab"}),
+                json!({"type": "pwa-chrome", "request": "attach", "port": 9222}),
+                json!({"type": "pwa-node", "request": "launch"}),
+            ] {
+                let expected = configuration.clone();
+                configure_browser_lifecycle(
+                    configuration
+                        .as_object_mut()
+                        .context("debug configuration must be an object")?,
+                )
+                .await?;
+                assert_eq!(configuration, expected);
+            }
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn browser_launch_preserves_unrelated_tabs_with_an_explicit_port() -> Result<()> {
+        smol::block_on(async {
+            let mut configuration = json!({
+                "type": "pwa-chrome",
+                "request": "launch",
+                "port": 9222,
+                "urlFilter": "http://localhost:3000/*",
+            });
+            configure_browser_lifecycle(
+                configuration
+                    .as_object_mut()
+                    .context("debug configuration must be an object")?,
+            )
+            .await?;
+            assert_eq!(configuration["port"], 9222);
+            assert_eq!(configuration["cleanUp"], "onlyTab");
+            assert_eq!(configuration["urlFilter"], "http://localhost:3000/*");
+            Ok(())
+        })
+    }
 }
