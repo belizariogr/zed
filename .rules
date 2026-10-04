@@ -188,3 +188,35 @@ Rules emerge from validated patterns, not one-off observations. The workflow is:
 1. Agent notes a pattern during a session.
 2. Team validates the pattern in code review.
 3. A dedicated commit adds the rule with context on *why* it exists.
+
+# Fork personalizations (Belizário Ribeiro)
+
+This fork (`belizariogr/zed`) carries personal source customizations on top of upstream Zed (and syncs such as from Zelle's fork).
+
+**HARD RULE:** Whenever this fork is updated from upstream (or any other remote), you **must** keep the personalization commits below working. Do not drop them, overwrite them silently, or leave them broken after a merge/rebase. After every sync:
+
+1. Ensure each personalization still exists in the tree (or is cleanly re-applied if rewritten).
+2. Resolve conflicts in favor of preserving the personalization behavior.
+3. Verify the related features still compile and behave as described.
+4. When adding a new personalization, append it to this list in the same commit (or immediately after).
+
+Author filter: `Belizário Ribeiro <belizariogr@gmail.com>`.
+
+## Personalization commits (on `main`)
+
+Newest first. Hashes may change if history is rewritten; match by message/intent if needed.
+
+| Commit | Summary | What to preserve |
+| --- | --- | --- |
+| `75d684dfb5` | Show active stack frame indicator in the editor gutter | Dedicated gutter icon for the current debug line; soften breakpoint accents when no debug session is running (`editor`, `icons`, `assets/icons/debug_stack_frame.svg`). |
+| `b6f480a59f` | Improve watch expression UI and undefined handling | Inline add-watch input in Variables; keep watches when evaluation fails or returns undefined (`debugger_ui` variable list, `project` debugger session). |
+| `9160b4f4bb` | Move add-watch button into the Variables tab bar | Add-watch control lives beside Console/Variables tabs (`debugger_ui` running session UI). |
+| `a468d10f12` | Add a + button to create debugger watch expressions | Ability to add watches from the variables list without selecting an existing variable first. |
+| `11174d394d` | Highlight PascalCase identifiers as classes in JS/TS | PascalCase identifiers highlighted as classes in JS/TS/TSX grammars and language config (same idea as Python class naming). |
+| `6f02e45fb0` | Fix browser debugger lifecycle and platform launch overrides | Disconnect ended/failed sessions without terminating the debuggee; reconnectable Chromium TCP launches; apply `launch.json` OS overrides before converting configs (`dap_adapters` javascript, `project` dap_store/session, `task` vscode_debug_format). |
+| `5ddf1bbc37` | Add Bun debugger and activate session windows on breakpoints | Bun DAP adapter/inspector, Bun debug locator, docs, and bringing session windows forward on breakpoints. |
+| `c4de2623fa` | Install Linux system builds as stable with reliable icons | `script/install-linux-system` defaults to stable channel and absolute desktop icon path. |
+| `c9f5940cd8` | Add system-wide Linux install script | System-wide Linux install path: CLI in `/usr/bin`, editor under `/usr/lib/zed` (`script/install-linux-system`). |
+| `96bf5e1fe5` | Enhance Project Panel UI with Root State Handling | Project panel `is_root` handling, root-specific padding/collapse-all behavior (`project_panel`). |
+
+Note: `5925f8fbfc` is only the merge of the PascalCase highlighting branch into `main`; the personalization itself is `11174d394d`.
