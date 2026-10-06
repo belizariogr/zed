@@ -6516,6 +6516,7 @@ impl ProjectPanel {
                                             .icon_size(IconSize::Small)
                                             .shape(IconButtonShape::Square)
                                             .style(ButtonStyle::OutlinedGhost)
+                                            .visible_on_hover(GROUP_NAME)
                                             .tooltip(|_window, cx| {
                                                 Tooltip::for_action(
                                                     "Collapse All",
@@ -6523,16 +6524,16 @@ impl ProjectPanel {
                                                     cx,
                                                 )
                                             })
-                                            .on_click(cx.listener(
-                                                |this, _, window, cx| {
+                                            .on_click(
+                                                cx.listener(|this, _, window, cx| {
                                                     this.collapse_all_entries(
                                                         &CollapseAllEntries,
                                                         window,
                                                         cx,
                                                     );
                                                     cx.stop_propagation();
-                                                },
-                                            )),
+                                                }),
+                                            ),
                                         )
                                     })
                                     .into_any_element(),

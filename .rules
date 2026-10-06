@@ -220,6 +220,6 @@ Newest first. Hashes may change if history is rewritten; match by message/intent
 | `5ddf1bbc37` | Add Bun debugger and activate session windows on breakpoints | Bun DAP adapter/inspector, Bun debug locator, docs, and bringing session windows forward on breakpoints. |
 | `c4de2623fa` | Install Linux system builds as stable with reliable icons | `script/install-linux-system` defaults to stable channel and absolute desktop icon path. |
 | `c9f5940cd8` | Add system-wide Linux install script | System-wide Linux install path: CLI in `/usr/bin`, editor under `/usr/lib/zed` (`script/install-linux-system`). |
-| `96bf5e1fe5` | Enhance Project Panel UI with Root State Handling | Project panel `is_root` handling, root-specific padding/collapse-all behavior (`project_panel`). |
+| `96bf5e1fe5` | Enhance Project Panel UI with Root State Handling | Project panel `is_root` handling, root-specific padding/collapse-all behavior; show the collapse-all button only while hovering the project row (`project_panel`). |
 
 Note: `5925f8fbfc` is only the merge of the PascalCase highlighting branch into `main`; the personalization itself is `11174d394d`.
