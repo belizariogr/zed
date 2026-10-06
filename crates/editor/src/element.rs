@@ -715,6 +715,28 @@ impl EditorElement {
         register_action(editor, window, Editor::edit_bookmark);
         register_action(editor, window, Editor::go_to_next_bookmark);
         register_action(editor, window, Editor::go_to_previous_bookmark);
+        register_action(editor, window, Editor::toggle_numbered_bookmark_0);
+        register_action(editor, window, Editor::toggle_numbered_bookmark_1);
+        register_action(editor, window, Editor::toggle_numbered_bookmark_2);
+        register_action(editor, window, Editor::toggle_numbered_bookmark_3);
+        register_action(editor, window, Editor::toggle_numbered_bookmark_4);
+        register_action(editor, window, Editor::toggle_numbered_bookmark_5);
+        register_action(editor, window, Editor::toggle_numbered_bookmark_6);
+        register_action(editor, window, Editor::toggle_numbered_bookmark_7);
+        register_action(editor, window, Editor::toggle_numbered_bookmark_8);
+        register_action(editor, window, Editor::toggle_numbered_bookmark_9);
+        register_action(editor, window, Editor::jump_to_numbered_bookmark_0);
+        register_action(editor, window, Editor::jump_to_numbered_bookmark_1);
+        register_action(editor, window, Editor::jump_to_numbered_bookmark_2);
+        register_action(editor, window, Editor::jump_to_numbered_bookmark_3);
+        register_action(editor, window, Editor::jump_to_numbered_bookmark_4);
+        register_action(editor, window, Editor::jump_to_numbered_bookmark_5);
+        register_action(editor, window, Editor::jump_to_numbered_bookmark_6);
+        register_action(editor, window, Editor::jump_to_numbered_bookmark_7);
+        register_action(editor, window, Editor::jump_to_numbered_bookmark_8);
+        register_action(editor, window, Editor::jump_to_numbered_bookmark_9);
+        register_action(editor, window, Editor::list_numbered_bookmarks);
+        register_action(editor, window, Editor::clear_numbered_bookmarks);
         register_action(editor, window, Editor::toggle_breakpoint);
         register_action(editor, window, Editor::edit_log_breakpoint);
         register_action(editor, window, Editor::enable_breakpoint);
@@ -2597,6 +2619,7 @@ impl EditorElement {
             return Vec::new();
         }
 
+        let x_offset = Pixels::ZERO;
         self.editor.update(cx, |editor, cx| {
             bookmarks
                 .iter()
@@ -2604,6 +2627,35 @@ impl EditorElement {
                     gutter.layout_item_skipping_folds(
                         *row,
                         |cx, _| editor.render_bookmark(*row, cx).into_any_element(),
+                        x_offset,
+                        window,
+                        cx,
+                    )
+                })
+                .collect_vec()
+        })
+    }
+
+    fn layout_numbered_bookmarks(
+        &self,
+        gutter: &Gutter<'_>,
+        bookmarks: &HashMap<DisplayRow, u8>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<AnyElement> {
+        if self.split_side == Some(SplitSide::Left) {
+            return Vec::new();
+        }
+
+        let x_offset = Pixels::ZERO;
+        self.editor.update(cx, |editor, cx| {
+            bookmarks
+                .iter()
+                .filter_map(|(row, number)| {
+                    gutter.layout_item_skipping_folds(
+                        *row,
+                        |cx, _| editor.render_numbered_bookmark(*row, *number, cx),
+                        x_offset,
                         window,
                         cx,
                     )
@@ -2632,6 +2684,7 @@ impl EditorElement {
                         .render_gutter_hover_button(position, row, window, cx)
                         .into_any_element()
                 },
+                gutter.dimensions.bookmark_lane_width,
                 window,
                 cx,
             )
@@ -2660,6 +2713,7 @@ impl EditorElement {
                                 .render_breakpoint(*text_anchor, *row, &bp, *state, cx)
                                 .into_any_element()
                         },
+                        gutter.dimensions.bookmark_lane_width,
                         window,
                         cx,
                     )
@@ -2686,6 +2740,7 @@ impl EditorElement {
                     gutter.layout_item_skipping_folds(
                         *row,
                         |_, _| editor.render_active_stack_frame().into_any_element(),
+                        gutter.dimensions.bookmark_lane_width,
                         window,
                         cx,
                     )
@@ -2780,7 +2835,7 @@ impl EditorElement {
                             editor.runnable_task_status(buffer_id, buffer_row)
                         });
 
-                    gutter.layout_item(
+                    gutter.layout_item_with_offset(
                         *display_row,
                         |cx, _| {
                             editor
@@ -2794,6 +2849,7 @@ impl EditorElement {
                                 )
                                 .into_any_element()
                         },
+                        gutter.dimensions.bookmark_lane_width,
                         window,
                         cx,
                     )
@@ -2910,7 +2966,10 @@ impl EditorElement {
         }
 
         let (relative, debugger_session_active) = self.editor.read_with(cx, |editor, cx| {
-            (editor.relative_line_numbers(cx), editor.has_active_debug_session(cx))
+            (
+                editor.relative_line_numbers(cx),
+                editor.has_active_debug_session(cx),
+            )
         });
 
         let relative_line_numbers_enabled = relative.enabled();
@@ -7045,6 +7104,7 @@ impl Gutter<'_> {
         &self,
         display_row: DisplayRow,
         render_item: impl Fn(&mut Context<'_, Editor>, &mut Window) -> AnyElement,
+        x_offset: Pixels,
         window: &mut Window,
         cx: &mut Context<'_, Editor>,
     ) -> Option<AnyElement> {
@@ -7057,13 +7117,14 @@ impl Gutter<'_> {
             return None;
         }
 
-        self.layout_item(display_row, render_item, window, cx)
+        self.layout_item_with_offset(display_row, render_item, x_offset, window, cx)
     }
 
-    fn layout_item(
+    fn layout_item_with_offset(
         &self,
         display_row: DisplayRow,
         render_item: impl Fn(&mut Context<'_, Editor>, &mut Window) -> AnyElement,
+        x_offset: Pixels,
         window: &mut Window,
         cx: &mut Context<'_, Editor>,
     ) -> Option<AnyElement> {
@@ -7084,7 +7145,8 @@ impl Gutter<'_> {
             return None;
         }
 
-        let button = self.prepaint_button(render_item(cx, window), display_row, window, cx);
+        let button =
+            self.prepaint_button(render_item(cx, window), display_row, x_offset, window, cx);
         Some(button)
     }
 
@@ -7092,6 +7154,7 @@ impl Gutter<'_> {
         &self,
         mut button: AnyElement,
         row: DisplayRow,
+        x_offset: Pixels,
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
@@ -7103,7 +7166,7 @@ impl Gutter<'_> {
         let git_gutter_width = EditorElement::gutter_strip_width(self.line_height, cx)
             + self.dimensions.git_blame_entries_width.unwrap_or_default();
 
-        let x = git_gutter_width + px(2.);
+        let x = git_gutter_width + px(2.) + x_offset;
 
         let mut y = Pixels::from(
             (row.as_f64() - self.scroll_position.y) * ScrollPixelOffset::from(self.line_height),
@@ -9735,19 +9798,42 @@ impl Element for EditorElement {
                     let show_bookmarks =
                         snapshot.show_bookmarks.unwrap_or(gutter_settings.bookmarks);
 
+                    let hide_bookmarks_under_run_indicators =
+                        gutter_dimensions.bookmark_lane_width.is_zero();
                     let bookmark_rows = self.editor.update(cx, |editor, cx| {
                         let mut rows = editor.active_bookmarks(start_row..end_row, window, cx);
-                        rows.retain(|k| !run_indicator_rows.contains(k));
-                        rows.retain(|k| !breakpoint_rows.contains_key(k));
-                        rows.retain(|k| !active_stack_frame_rows.contains(k));
+                        if hide_bookmarks_under_run_indicators {
+                            rows.retain(|k| !run_indicator_rows.contains(k));
+                        }
                         rows
                     });
 
-                    let bookmarks = if show_bookmarks {
+                    let numbered_bookmark_rows = self.editor.update(cx, |editor, cx| {
+                        let mut rows =
+                            editor.active_numbered_bookmarks(start_row..end_row, window, cx);
+                        if hide_bookmarks_under_run_indicators {
+                            rows.retain(|k, _| !run_indicator_rows.contains(k));
+                        }
+                        rows
+                    });
+                    let bookmark_rows: collections::HashSet<_> = bookmark_rows
+                        .into_iter()
+                        .filter(|row| !numbered_bookmark_rows.contains_key(row))
+                        .collect();
+
+                    let mut bookmarks = if show_bookmarks {
                         self.layout_bookmarks(&gutter, &bookmark_rows, window, cx)
                     } else {
                         Vec::new()
                     };
+                    if show_bookmarks {
+                        bookmarks.extend(self.layout_numbered_bookmarks(
+                            &gutter,
+                            &numbered_bookmark_rows,
+                            window,
+                            cx,
+                        ));
+                    }
 
                     let show_breakpoints = snapshot
                         .show_breakpoints
@@ -9778,7 +9864,9 @@ impl Element for EditorElement {
                     if let Some(row) = gutter_hover_button
                         && !breakpoint_rows.contains_key(&row)
                         && !run_indicator_rows.contains(&row)
-                        && !bookmark_rows.contains(&row)
+                        && (!gutter_dimensions.bookmark_lane_width.is_zero()
+                            || (!bookmark_rows.contains(&row)
+                                && !numbered_bookmark_rows.contains_key(&row)))
                         && (show_bookmarks || show_breakpoints)
                     {
                         let position = snapshot
@@ -9831,7 +9919,7 @@ impl Element for EditorElement {
                                     .render_diff_review_button(display_row, button_width, cx)
                                     .into_any_element()
                             });
-                            gutter.prepaint_button(button, display_row, window, cx)
+                            gutter.prepaint_button(button, display_row, Pixels::ZERO, window, cx)
                         });
 
                     self.layout_signature_help(
@@ -11663,6 +11751,7 @@ mod tests {
             width: px(30.0),
             margin: Pixels::ZERO,
             git_blame_entries_width: None,
+            bookmark_lane_width: Pixels::ZERO,
         };
         const EMPTY_ROW_INFO: RowInfo = RowInfo {
             buffer_id: None,

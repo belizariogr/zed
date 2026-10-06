@@ -144,6 +144,7 @@ pub(crate) struct SerializedWorkspace {
     pub(crate) docks: DockStructure,
     pub(crate) session_id: Option<String>,
     pub(crate) bookmarks: BTreeMap<Arc<Path>, Vec<SerializedBookmark>>,
+    pub(crate) numbered_bookmarks: BTreeMap<Arc<Path>, Vec<project::bookmark_store::SerializedNumberedBookmark>>,
     pub(crate) breakpoints: BTreeMap<Arc<Path>, Vec<SourceBreakpoint>>,
     pub(crate) user_toolchains: BTreeMap<ToolchainScope, IndexSet<Toolchain>>,
     pub(crate) recent_navigation_history: Vec<PathBuf>,

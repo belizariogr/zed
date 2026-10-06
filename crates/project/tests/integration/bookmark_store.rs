@@ -3,7 +3,10 @@ use std::{path::Path, sync::Arc};
 use collections::BTreeMap;
 use gpui::{Entity, TestAppContext};
 use language::Buffer;
-use project::{Project, bookmark_store::SerializedBookmark};
+use project::{
+    Project,
+    bookmark_store::{SerializedBookmark, SerializedNumberedBookmark},
+};
 use serde_json::json;
 use util::path;
 
@@ -748,5 +751,161 @@ mod integration {
         assert_eq!(bookmarks.len(), 2);
         assert_bookmark_rows(&bookmarks, path!("/project/renamed.rs"), &[1]);
         assert_bookmark_rows(&bookmarks, path!("/project/untouched.rs"), &[0, 2]);
+    }
+
+    fn toggle_numbered(
+        project: &Entity<Project>,
+        buffer: &Entity<Buffer>,
+        row: u32,
+        column: u32,
+        number: u8,
+        unique_across_files: bool,
+        cx: &mut TestAppContext,
+    ) {
+        let buffer = buffer.clone();
+        project.update(cx, |project, cx| {
+            let bookmark_store = project.bookmark_store();
+            let snapshot = buffer.read(cx).snapshot();
+            let anchor = snapshot.anchor_after(text::Point::new(row, column));
+            bookmark_store.update(cx, |store, cx| {
+                store.toggle_numbered_bookmark(
+                    buffer.clone(),
+                    anchor,
+                    number,
+                    unique_across_files,
+                    cx,
+                );
+            });
+        });
+    }
+
+    fn numbered_locations(
+        project: &Entity<Project>,
+        cx: &mut TestAppContext,
+    ) -> Vec<(std::sync::Arc<std::path::Path>, SerializedNumberedBookmark)> {
+        project.read_with(cx, |project, cx| {
+            project
+                .bookmark_store()
+                .read(cx)
+                .numbered_bookmark_locations(cx)
+        })
+    }
+
+    #[gpui::test]
+    async fn test_toggle_numbered_bookmark_replaces_other_number_on_same_line(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let fs = fs::FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/project"), json!({"file.rs": "aaa\nbbb\nccc\n"}))
+            .await;
+
+        let project = Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
+        let buffer = open_buffer(&project, path!("/project/file.rs"), cx).await;
+
+        toggle_numbered(&project, &buffer, 1, 0, 1, false, cx);
+        toggle_numbered(&project, &buffer, 1, 2, 2, false, cx);
+
+        let locations = numbered_locations(&project, cx);
+        assert_eq!(locations.len(), 1);
+        assert_eq!(locations[0].1.number, 2);
+        assert_eq!(locations[0].1.row, 1);
+        assert_eq!(locations[0].1.column, 2);
+    }
+
+    #[gpui::test]
+    async fn test_toggle_numbered_bookmark_unique_across_files(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = fs::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                "file1.rs": "aaa\nbbb\n",
+                "file2.rs": "ccc\nddd\n"
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
+        let buffer1 = open_buffer(&project, path!("/project/file1.rs"), cx).await;
+        let buffer2 = open_buffer(&project, path!("/project/file2.rs"), cx).await;
+
+        toggle_numbered(&project, &buffer1, 0, 0, 3, true, cx);
+        toggle_numbered(&project, &buffer2, 1, 1, 3, true, cx);
+
+        let locations = numbered_locations(&project, cx);
+        assert_eq!(locations.len(), 1);
+        assert!(
+            locations[0]
+                .0
+                .ends_with(std::path::Path::new("file2.rs"))
+        );
+        assert_eq!(locations[0].1.number, 3);
+        assert_eq!(locations[0].1.row, 1);
+        assert_eq!(locations[0].1.column, 1);
+    }
+
+    #[gpui::test]
+    async fn test_numbered_bookmarks_vscode_project_file_roundtrip(cx: &mut TestAppContext) {
+        init_test(cx);
+
+        let fs = fs::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/project"),
+            json!({
+                "a.rs": "aaa\nbbb\nccc\n",
+                "b.rs": "ddd\neee\n"
+            }),
+        )
+        .await;
+
+        let project = Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
+        let buffer_a = open_buffer(&project, path!("/project/a.rs"), cx).await;
+        let buffer_b = open_buffer(&project, path!("/project/b.rs"), cx).await;
+
+        toggle_numbered(&project, &buffer_a, 2, 1, 1, false, cx);
+        toggle_numbered(&project, &buffer_b, 0, 0, 9, false, cx);
+
+        let project_file = project.read_with(cx, |project, cx| {
+            project
+                .bookmark_store()
+                .read(cx)
+                .vscode_project_file_for_worktree(std::path::Path::new(path!("/project")), cx)
+        });
+
+        assert_eq!(project_file.files.len(), 2);
+        assert_eq!(project_file.files[0].path, "a.rs");
+        assert_eq!(project_file.files[0].bookmarks.len(), 10);
+        assert_eq!(project_file.files[0].bookmarks[1].line, 2);
+        assert_eq!(project_file.files[0].bookmarks[1].column, 1);
+        assert_eq!(project_file.files[0].bookmarks[0].line, -1);
+        assert_eq!(project_file.files[1].path, "b.rs");
+        assert_eq!(project_file.files[1].bookmarks[9].line, 0);
+
+        project.update(cx, |project, cx| {
+            project.bookmark_store().update(cx, |store, cx| {
+                store.clear_all_numbered_bookmarks(cx);
+            });
+        });
+        assert!(numbered_locations(&project, cx).is_empty());
+
+        project.update(cx, |project, cx| {
+            project.bookmark_store().update(cx, |store, cx| {
+                store.load_vscode_project_file(
+                    std::path::Path::new(path!("/project")),
+                    project_file,
+                    cx,
+                );
+            });
+        });
+
+        let restored = numbered_locations(&project, cx);
+        assert_eq!(restored.len(), 2);
+        assert_eq!(restored[0].1.number, 1);
+        assert_eq!(restored[0].1.row, 2);
+        assert_eq!(restored[1].1.number, 9);
+        assert_eq!(restored[1].1.row, 0);
     }
 }

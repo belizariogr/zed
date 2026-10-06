@@ -292,6 +292,7 @@ impl VsCodeSettings {
             go_to_definition_scroll_strategy: None,
             lsp_results_location: None,
             gutter: self.gutter_content(),
+            numbered_bookmarks: self.numbered_bookmarks_content(),
             horizontal_scroll_margin: None,
             hover_popover_delay: self.read_u64("editor.hover.delay").map(Into::into),
             hover_popover_enabled: self.read_bool("editor.hover.enabled"),
@@ -369,6 +370,42 @@ impl VsCodeSettings {
                 _ => None,
             }),
             git_gutter_width: None,
+        })
+    }
+
+    fn numbered_bookmarks_content(&self) -> Option<NumberedBookmarksContent> {
+        skip_default(NumberedBookmarksContent {
+            save_bookmarks_in_project: self.read_bool("numberedBookmarks.saveBookmarksInProject"),
+            show_not_defined_warning: self
+                .read_bool("numberedBookmarks.showBookmarkNotDefinedWarning"),
+            navigate_through_all_files: self.read_enum(
+                "numberedBookmarks.navigateThroughAllFiles",
+                |value| match value {
+                    "false" => Some(NumberedBookmarkNavigateThroughAllFiles::Disabled),
+                    "replace" => Some(NumberedBookmarkNavigateThroughAllFiles::Replace),
+                    "allowDuplicates" => {
+                        Some(NumberedBookmarkNavigateThroughAllFiles::AllowDuplicates)
+                    }
+                    _ => None,
+                },
+            ),
+            gutter_icon_fill_color: self.read_string("numberedBookmarks.gutterIconFillColor"),
+            gutter_icon_number_color: self.read_string("numberedBookmarks.gutterIconNumberColor"),
+            reveal_location: self
+                .read_enum("numberedBookmarks.revealLocation", |value| match value {
+                    "top" => Some(NumberedBookmarkRevealLocation::Top),
+                    "center" => Some(NumberedBookmarkRevealLocation::Center),
+                    _ => None,
+                })
+                .or_else(|| {
+                    self.read_enum("numberedBookmarks.revealPosition", |value| match value {
+                        "top" => Some(NumberedBookmarkRevealLocation::Top),
+                        "center" => Some(NumberedBookmarkRevealLocation::Center),
+                        _ => None,
+                    })
+                }),
+            line_background: None,
+            line_border: None,
         })
     }
 

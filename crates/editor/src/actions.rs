@@ -868,6 +868,54 @@ actions!(
         Backtab,
         /// Toggles a bookmark at the current line.
         ToggleBookmark,
+        /// Toggles numbered bookmark 0 at the current position.
+        ToggleNumberedBookmark0,
+        /// Toggles numbered bookmark 1 at the current position.
+        ToggleNumberedBookmark1,
+        /// Toggles numbered bookmark 2 at the current position.
+        ToggleNumberedBookmark2,
+        /// Toggles numbered bookmark 3 at the current position.
+        ToggleNumberedBookmark3,
+        /// Toggles numbered bookmark 4 at the current position.
+        ToggleNumberedBookmark4,
+        /// Toggles numbered bookmark 5 at the current position.
+        ToggleNumberedBookmark5,
+        /// Toggles numbered bookmark 6 at the current position.
+        ToggleNumberedBookmark6,
+        /// Toggles numbered bookmark 7 at the current position.
+        ToggleNumberedBookmark7,
+        /// Toggles numbered bookmark 8 at the current position.
+        ToggleNumberedBookmark8,
+        /// Toggles numbered bookmark 9 at the current position.
+        ToggleNumberedBookmark9,
+        /// Jumps to numbered bookmark 0.
+        JumpToNumberedBookmark0,
+        /// Jumps to numbered bookmark 1.
+        JumpToNumberedBookmark1,
+        /// Jumps to numbered bookmark 2.
+        JumpToNumberedBookmark2,
+        /// Jumps to numbered bookmark 3.
+        JumpToNumberedBookmark3,
+        /// Jumps to numbered bookmark 4.
+        JumpToNumberedBookmark4,
+        /// Jumps to numbered bookmark 5.
+        JumpToNumberedBookmark5,
+        /// Jumps to numbered bookmark 6.
+        JumpToNumberedBookmark6,
+        /// Jumps to numbered bookmark 7.
+        JumpToNumberedBookmark7,
+        /// Jumps to numbered bookmark 8.
+        JumpToNumberedBookmark8,
+        /// Jumps to numbered bookmark 9.
+        JumpToNumberedBookmark9,
+        /// Lists numbered bookmarks in the current file.
+        ListNumberedBookmarks,
+        /// Lists numbered bookmarks from all files.
+        ListNumberedBookmarksFromAllFiles,
+        /// Clears numbered bookmarks from the current file.
+        ClearNumberedBookmarks,
+        /// Clears numbered bookmarks from all files.
+        ClearNumberedBookmarksFromAllFiles,
         /// Toggles a bookmark at the current line, prompting for a label when adding one.
         ToggleBookmarkWithLabel,
         /// Edits the bookmark's label at the current line.

@@ -57,6 +57,7 @@ mod edit_prediction_tests;
 mod editor_block_comment_tests;
 #[cfg(test)]
 mod editor_tests;
+mod numbered_bookmarks;
 mod signature_help;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test;
@@ -377,6 +378,8 @@ pub fn init(cx: &mut App) {
             workspace.register_action(Editor::cancel_language_server_work);
             workspace.register_action(Editor::toggle_focus);
             workspace.register_action(Editor::view_bookmarks);
+            workspace.register_action(Editor::list_numbered_bookmarks_from_all_files);
+            workspace.register_action(Editor::clear_numbered_bookmarks_from_all_files);
             if let Some(window) = window {
                 cx.subscribe_in(
                     workspace.project(),
@@ -1301,6 +1304,8 @@ pub struct GutterDimensions {
     pub width: Pixels,
     pub margin: Pixels,
     pub git_blame_entries_width: Option<Pixels>,
+    /// Extra gutter width so a bookmark can sit to the left of a breakpoint on the same line.
+    pub bookmark_lane_width: Pixels,
 }
 
 impl GutterDimensions {
@@ -2275,7 +2280,8 @@ impl Editor {
             ));
             project_subscriptions.push(cx.observe(
                 &project.read(cx).bookmark_store(),
-                |_, _, cx| {
+                |editor, _, cx| {
+                    editor.refresh_numbered_bookmark_highlights(cx);
                     cx.notify();
                 },
             ));
@@ -4750,13 +4756,21 @@ impl Editor {
     // offset so the breakpoint circle sits inside the arrow's body (the glyph's
     // body is left of its center because of the tip).
     fn render_active_stack_frame(&self) -> Div {
-        div().w(GUTTER_INDICATOR_WIDTH).h(rems(1.)).relative().child(
-            div().absolute().left(rems(-0.1875)).top(rems(-0.0625)).child(
-                Icon::new(IconName::DebugStackFrame)
-                    .size(IconSize::Custom(rems(1.125)))
-                    .color(Color::Warning),
-            ),
-        )
+        div()
+            .w(GUTTER_INDICATOR_WIDTH)
+            .h(rems(1.))
+            .relative()
+            .child(
+                div()
+                    .absolute()
+                    .left(rems(-0.1875))
+                    .top(rems(-0.0625))
+                    .child(
+                        Icon::new(IconName::DebugStackFrame)
+                            .size(IconSize::Custom(rems(1.125)))
+                            .color(Color::Warning),
+                    ),
+            )
     }
 
     pub(crate) fn has_active_debug_session(&self, cx: &App) -> bool {
@@ -12458,14 +12472,20 @@ impl EditorSnapshot {
                     });
 
             let is_singleton = self.buffer_snapshot().is_singleton();
+            // runnables, breakpoints and bookmarks share one indicator slot;
+            // when bookmarks and breakpoints are both enabled, add a second
+            // lane so they can sit side by side: bookmarks left, breakpoints right
+            let bookmark_lane_width = if is_singleton && show_bookmarks && show_breakpoints {
+                ch_width * 2.0
+            } else {
+                Pixels::ZERO
+            };
 
             let left_padding = git_blame_entries_width.unwrap_or(Pixels::ZERO)
                 + if !is_singleton {
                     ch_width * 4.0
-                // runnables, breakpoints and bookmarks are shown in the same place
-                // if all three are there only the runnable is shown
                 } else if show_runnables || show_breakpoints || show_bookmarks {
-                    ch_width * 3.0
+                    ch_width * 3.0 + bookmark_lane_width
                 } else if show_git_gutter && show_line_numbers {
                     ch_width * 2.0
                 } else if show_git_gutter || show_line_numbers {
@@ -12492,6 +12512,7 @@ impl EditorSnapshot {
                 width: line_gutter_width + left_padding + right_padding,
                 margin: GutterDimensions::default_gutter_margin(font_id, font_size, cx),
                 git_blame_entries_width,
+                bookmark_lane_width,
             }
         } else if self.offset_content {
             GutterDimensions::default_with_margin(font_id, font_size, cx)

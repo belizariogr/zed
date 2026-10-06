@@ -759,6 +759,27 @@
     // Use "default" to scale with font size, or {"custom": <pixels>} for a fixed width.
     "git_gutter_width": "default",
   },
+  "numbered_bookmarks": {
+    // Save numbered bookmarks in `.vscode/numbered-bookmarks.json` so they can be committed with the project.
+    "save_bookmarks_in_project": false,
+    // Show a warning when jumping to a numbered bookmark that is not defined.
+    "show_not_defined_warning": false,
+    // How numbered bookmarks interact across files:
+    //  1. "disabled" — jump and toggle only within the current file (VS Code "false")
+    //  2. "replace" — a number is unique across files
+    //  3. "allow_duplicates" — the same number may exist in multiple files; repeated jumps cycle through them
+    "navigate_through_all_files": "disabled",
+    // Fill color for numbered bookmark gutter icons.
+    "gutter_icon_fill_color": "#00ff25",
+    // Number color for numbered bookmark gutter icons.
+    "gutter_icon_number_color": "#000000",
+    // Where to reveal the line when jumping to a numbered bookmark: "top" or "center".
+    "reveal_location": "center",
+    // Background color for bookmarked lines. Use a fully transparent color to disable.
+    "line_background": "#00000000",
+    // Border color for bookmarked lines. Use a fully transparent color to disable.
+    "line_border": "#00000000",
+  },
   "indent_guides": {
     // Whether to show indent guides in the editor.
     "enabled": true,

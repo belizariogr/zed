@@ -30,6 +30,7 @@ mod open_type;
 mod text_system;
 
 mod platform;
+mod symbolic_hotkeys;
 mod window;
 mod window_appearance;
 

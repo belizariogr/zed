@@ -104,6 +104,14 @@ unsafe fn build_classes() {
                 should_handle_reopen as extern "C" fn(&mut Object, Sel, id, bool),
             );
             decl.add_method(
+                sel!(applicationDidBecomeActive:),
+                did_become_active as extern "C" fn(&mut Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(applicationWillResignActive:),
+                will_resign_active as extern "C" fn(&mut Object, Sel, id),
+            );
+            decl.add_method(
                 sel!(applicationWillTerminate:),
                 will_terminate as extern "C" fn(&mut Object, Sel, id),
             );
@@ -1408,6 +1416,11 @@ extern "C" fn did_finish_launching(this: &mut Object, _: Sel, _: id) {
             object: nil
         ];
 
+        let platform = get_mac_platform(this);
+        if !platform.0.lock().headless {
+            crate::symbolic_hotkeys::restore_stale();
+        }
+
         let thermal_name = ns_string("NSProcessInfoThermalStateDidChangeNotification");
         let process_info: id = msg_send![class!(NSProcessInfo), processInfo];
         let _: () = msg_send![notification_center, addObserver: this as id
@@ -1469,7 +1482,20 @@ extern "C" fn should_handle_reopen(this: &mut Object, _: Sel, _: id, has_open_wi
     }
 }
 
+extern "C" fn did_become_active(this: &mut Object, _: Sel, _: id) {
+    let platform = unsafe { get_mac_platform(this) };
+    if platform.0.lock().headless {
+        return;
+    }
+    crate::symbolic_hotkeys::lock();
+}
+
+extern "C" fn will_resign_active(_this: &mut Object, _: Sel, _: id) {
+    crate::symbolic_hotkeys::unlock();
+}
+
 extern "C" fn will_terminate(this: &mut Object, _: Sel, _: id) {
+    crate::symbolic_hotkeys::unlock();
     let platform = unsafe { get_mac_platform(this) };
     let mut lock = platform.0.lock();
     if let Some(mut callback) = lock.quit.take() {

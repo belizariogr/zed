@@ -208,6 +208,7 @@ Newest first. Hashes may change if history is rewritten; match by message/intent
 
 | Commit | Summary | What to preserve |
 | --- | --- | --- |
+| Match by summary | Add Delphi-style numbered bookmarks | Toggle/jump 0–9, list, clear, gutter badges to the left of breakpoints, workspace persistence, optional `.vscode/numbered-bookmarks.json`, and disabling macOS symbolic hotkeys while focused so cmd-shift-N is not stolen by screenshots (`editor`, `project` bookmark_store, `gpui_macos`, settings/keymaps). |
 | Match by summary | Navigate browser launches after the page debugger is configured | Open the URL from `launch.json` after binding and configuring the browser page's child session, avoiding a cached service worker deadlock while preserving breakpoints, URL filters, browser profiles, and lifecycle cleanup (`dap_adapters` javascript, `project` debugger session). |
 | Match by summary | Allow adding watch expressions without an active debug session | Always enable add-watch controls, show Variables before starting debug, retain watch expressions in the project's DAP store across sessions, and evaluate them when a stack frame becomes available (`debugger_ui`, `project` debugger session/dap_store). |
 | Match by summary | Add a macOS build and install script | `script/install-macos` builds the fork in release mode as stable by default, preserves macOS bundle icons and document associations, and installs the app and CLI. |

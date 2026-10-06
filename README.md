@@ -26,6 +26,7 @@ Customizations implemented in this fork:
 
 ### Editor / Languages
 
+- **Numbered Bookmarks** — Delphi-style numbered bookmarks 0–9 matching the VS Code Numbered Bookmarks extension: toggle/jump, list, clear, gutter badges, workspace persistence, and optional `.vscode/numbered-bookmarks.json`
 - **PascalCase as classes in JS/TS** — PascalCase identifiers highlighted as classes in JS/TS/TSX grammars and language config (same idea as Python class naming)
 
 ### Project Panel

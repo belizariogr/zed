@@ -240,6 +240,96 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
                 ),
                 MenuItem::action("Go to Line/Column...", editor::actions::ToggleGoToLine),
                 MenuItem::separator(),
+                // Menu key equivalents claim these shortcuts from macOS while Zed is
+                // focused (⌘⇧4 is the system screenshot shortcut otherwise).
+                MenuItem::submenu(Menu::new("Numbered Bookmarks").items([
+                    MenuItem::action(
+                        "Toggle Bookmark 1",
+                        editor::actions::ToggleNumberedBookmark1,
+                    ),
+                    MenuItem::action(
+                        "Toggle Bookmark 2",
+                        editor::actions::ToggleNumberedBookmark2,
+                    ),
+                    MenuItem::action(
+                        "Toggle Bookmark 3",
+                        editor::actions::ToggleNumberedBookmark3,
+                    ),
+                    MenuItem::action(
+                        "Toggle Bookmark 4",
+                        editor::actions::ToggleNumberedBookmark4,
+                    ),
+                    MenuItem::action(
+                        "Toggle Bookmark 5",
+                        editor::actions::ToggleNumberedBookmark5,
+                    ),
+                    MenuItem::action(
+                        "Toggle Bookmark 6",
+                        editor::actions::ToggleNumberedBookmark6,
+                    ),
+                    MenuItem::action(
+                        "Toggle Bookmark 7",
+                        editor::actions::ToggleNumberedBookmark7,
+                    ),
+                    MenuItem::action(
+                        "Toggle Bookmark 8",
+                        editor::actions::ToggleNumberedBookmark8,
+                    ),
+                    MenuItem::action(
+                        "Toggle Bookmark 9",
+                        editor::actions::ToggleNumberedBookmark9,
+                    ),
+                    MenuItem::separator(),
+                    MenuItem::action(
+                        "Go to Bookmark 1",
+                        editor::actions::JumpToNumberedBookmark1,
+                    ),
+                    MenuItem::action(
+                        "Go to Bookmark 2",
+                        editor::actions::JumpToNumberedBookmark2,
+                    ),
+                    MenuItem::action(
+                        "Go to Bookmark 3",
+                        editor::actions::JumpToNumberedBookmark3,
+                    ),
+                    MenuItem::action(
+                        "Go to Bookmark 4",
+                        editor::actions::JumpToNumberedBookmark4,
+                    ),
+                    MenuItem::action(
+                        "Go to Bookmark 5",
+                        editor::actions::JumpToNumberedBookmark5,
+                    ),
+                    MenuItem::action(
+                        "Go to Bookmark 6",
+                        editor::actions::JumpToNumberedBookmark6,
+                    ),
+                    MenuItem::action(
+                        "Go to Bookmark 7",
+                        editor::actions::JumpToNumberedBookmark7,
+                    ),
+                    MenuItem::action(
+                        "Go to Bookmark 8",
+                        editor::actions::JumpToNumberedBookmark8,
+                    ),
+                    MenuItem::action(
+                        "Go to Bookmark 9",
+                        editor::actions::JumpToNumberedBookmark9,
+                    ),
+                    MenuItem::separator(),
+                    MenuItem::action("List Bookmarks", editor::actions::ListNumberedBookmarks),
+                    MenuItem::action(
+                        "List Bookmarks from All Files",
+                        editor::actions::ListNumberedBookmarksFromAllFiles,
+                    ),
+                    MenuItem::separator(),
+                    MenuItem::action("Clear Bookmarks", editor::actions::ClearNumberedBookmarks),
+                    MenuItem::action(
+                        "Clear Bookmarks from All Files",
+                        editor::actions::ClearNumberedBookmarksFromAllFiles,
+                    ),
+                ])),
+                MenuItem::separator(),
                 MenuItem::action(
                     "Go to Definition",
                     editor::actions::GoToDefinition::default(),

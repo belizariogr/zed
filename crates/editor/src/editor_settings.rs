@@ -32,6 +32,7 @@ pub struct EditorSettings {
     pub scrollbar: Scrollbar,
     pub minimap: Minimap,
     pub gutter: Gutter,
+    pub numbered_bookmarks: NumberedBookmarksSettings,
     pub scroll_beyond_last_line: ScrollBeyondLastLine,
     pub vertical_scroll_margin: f64,
     pub autoscroll_on_clicks: bool,
@@ -159,6 +160,18 @@ pub struct Gutter {
     pub git_gutter_width: settings::GitGutterWidth,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct NumberedBookmarksSettings {
+    pub save_bookmarks_in_project: bool,
+    pub show_not_defined_warning: bool,
+    pub navigate_through_all_files: settings::NumberedBookmarkNavigateThroughAllFiles,
+    pub gutter_icon_fill_color: String,
+    pub gutter_icon_number_color: String,
+    pub reveal_location: settings::NumberedBookmarkRevealLocation,
+    pub line_background: String,
+    pub line_border: String,
+}
+
 /// Forcefully enable or disable the scrollbar for each axis
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct ScrollbarAxes {
@@ -282,6 +295,19 @@ impl Settings for EditorSettings {
                 breakpoints: gutter.breakpoints.unwrap(),
                 folds: gutter.folds.unwrap(),
                 git_gutter_width: gutter.git_gutter_width.unwrap(),
+            },
+            numbered_bookmarks: {
+                let numbered = editor.numbered_bookmarks.unwrap();
+                NumberedBookmarksSettings {
+                    save_bookmarks_in_project: numbered.save_bookmarks_in_project.unwrap(),
+                    show_not_defined_warning: numbered.show_not_defined_warning.unwrap(),
+                    navigate_through_all_files: numbered.navigate_through_all_files.unwrap(),
+                    gutter_icon_fill_color: numbered.gutter_icon_fill_color.unwrap(),
+                    gutter_icon_number_color: numbered.gutter_icon_number_color.unwrap(),
+                    reveal_location: numbered.reveal_location.unwrap(),
+                    line_background: numbered.line_background.unwrap(),
+                    line_border: numbered.line_border.unwrap(),
+                }
             },
             scroll_beyond_last_line: editor.scroll_beyond_last_line.unwrap(),
             vertical_scroll_margin: editor.vertical_scroll_margin.unwrap() as f64,

@@ -7715,6 +7715,23 @@ impl Workspace {
 
         match self.workspace_location(cx) {
             WorkspaceLocation::Location(location, paths) => {
+                let numbered_bookmarks = self.project.update(cx, |project, cx| {
+                    project
+                        .bookmark_store()
+                        .read(cx)
+                        .all_serialized_numbered_bookmarks(cx)
+                });
+
+                if Self::numbered_bookmarks_save_in_project(cx) {
+                    let fs = self.project.read(cx).fs().clone();
+                    self.project
+                        .read(cx)
+                        .bookmark_store()
+                        .read(cx)
+                        .persist_vscode_project_files(fs, cx)
+                        .detach_and_log_err(cx);
+                }
+
                 let bookmarks = self.project.update(cx, |project, cx| {
                     project
                         .bookmark_store()
@@ -7755,6 +7772,7 @@ impl Workspace {
                     centered_layout: self.centered_layout,
                     session_id: self.session_id.clone(),
                     bookmarks,
+                    numbered_bookmarks,
                     breakpoints,
                     window_id: Some(window.window_handle().window_id().as_u64()),
                     user_toolchains,
@@ -7956,6 +7974,26 @@ impl Workspace {
                 .await
                 .log_err();
 
+            let save_numbered_bookmarks_in_project =
+                cx.update(|_, cx| Workspace::numbered_bookmarks_save_in_project(cx))?;
+            if save_numbered_bookmarks_in_project {
+                Workspace::restore_numbered_bookmarks_from_project_files(&project, cx)
+                    .await
+                    .log_err();
+            } else {
+                project
+                    .update(cx, |project, cx| {
+                        project.bookmark_store().update(cx, |bookmark_store, cx| {
+                            bookmark_store.load_serialized_numbered_bookmarks(
+                                serialized_workspace.numbered_bookmarks,
+                                cx,
+                            )
+                        })
+                    })
+                    .await
+                    .log_err();
+            }
+
             let _ = project
                 .update(cx, |project, cx| {
                     project
@@ -8002,6 +8040,67 @@ impl Workspace {
 
             Ok(opened_items)
         })
+    }
+
+    fn numbered_bookmarks_save_in_project(cx: &App) -> bool {
+        cx.global::<SettingsStore>()
+            .merged_settings()
+            .editor
+            .numbered_bookmarks
+            .as_ref()
+            .and_then(|numbered| numbered.save_bookmarks_in_project)
+            .unwrap_or(false)
+    }
+
+    async fn restore_numbered_bookmarks_from_project_files(
+        project: &Entity<Project>,
+        cx: &mut AsyncWindowContext,
+    ) -> Result<()> {
+        let (fs, worktree_roots) = project.update(cx, |project, cx| {
+            let roots = project
+                .visible_worktrees(cx)
+                .map(|worktree| worktree.read(cx).abs_path())
+                .collect::<Vec<_>>();
+            (project.fs().clone(), roots)
+        });
+
+        let mut loaded = Vec::new();
+        for worktree_root in worktree_roots {
+            let path =
+                project::bookmark_store::BookmarkStore::vscode_project_file_path(&worktree_root);
+            if !fs.is_file(&path).await {
+                continue;
+            }
+            match fs.load(&path).await {
+                Ok(contents) => {
+                    match serde_json::from_str::<
+                        project::bookmark_store::NumberedBookmarksProjectFile,
+                    >(&contents)
+                    {
+                        Ok(project_file) => loaded.push((worktree_root, project_file)),
+                        Err(error) => {
+                            log::error!(
+                                "Error loading numbered bookmarks from {}: {error}",
+                                path.display()
+                            );
+                        }
+                    }
+                }
+                Err(error) => {
+                    log::error!(
+                        "Error reading numbered bookmarks from {}: {error}",
+                        path.display()
+                    );
+                }
+            }
+        }
+
+        project.update(cx, |project, cx| {
+            project.bookmark_store().update(cx, |bookmark_store, cx| {
+                bookmark_store.replace_numbered_bookmarks_from_project_files(loaded, cx);
+            })
+        });
+        Ok(())
     }
 
     pub fn key_context(&self, cx: &App) -> KeyContext {

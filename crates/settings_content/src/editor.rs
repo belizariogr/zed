@@ -74,6 +74,8 @@ pub struct EditorSettingsContent {
     pub minimap: Option<MinimapContent>,
     /// Gutter related settings
     pub gutter: Option<GutterContent>,
+    /// Delphi-style numbered bookmarks (0–9).
+    pub numbered_bookmarks: Option<NumberedBookmarksContent>,
     /// Whether the editor will scroll beyond the last line.
     ///
     /// Default: one_page
@@ -554,6 +556,96 @@ pub struct GutterContent {
     ///
     /// Default: "default"
     pub git_gutter_width: Option<GitGutterWidth>,
+}
+
+/// Settings for Delphi-style numbered bookmarks (0–9).
+#[with_fallible_options]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, MergeFrom, PartialEq)]
+pub struct NumberedBookmarksContent {
+    /// Save numbered bookmarks in `.vscode/numbered-bookmarks.json` so they can be shared with the project.
+    ///
+    /// Default: false
+    pub save_bookmarks_in_project: Option<bool>,
+    /// Show a warning when jumping to a numbered bookmark that is not defined.
+    ///
+    /// Default: false
+    pub show_not_defined_warning: Option<bool>,
+    /// How numbered bookmarks interact across files.
+    ///
+    /// Default: disabled
+    pub navigate_through_all_files: Option<NumberedBookmarkNavigateThroughAllFiles>,
+    /// Fill color for numbered bookmark gutter icons (hex, e.g. "#00ff25").
+    ///
+    /// Default: "#00ff25"
+    pub gutter_icon_fill_color: Option<String>,
+    /// Number color for numbered bookmark gutter icons (hex, e.g. "#000000").
+    ///
+    /// Default: "#000000"
+    pub gutter_icon_number_color: Option<String>,
+    /// Where to reveal the line when jumping to a numbered bookmark.
+    ///
+    /// Default: center
+    pub reveal_location: Option<NumberedBookmarkRevealLocation>,
+    /// Background color for bookmarked lines (hex with optional alpha). Empty/transparent disables highlighting.
+    ///
+    /// Default: "#00000000"
+    pub line_background: Option<String>,
+    /// Border color for bookmarked lines (hex with optional alpha). Empty/transparent disables the border.
+    ///
+    /// Default: "#00000000"
+    pub line_border: Option<String>,
+}
+
+/// How numbered bookmarks interact across files.
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum NumberedBookmarkNavigateThroughAllFiles {
+    /// Jump and toggle only within the current file. The same number may exist in other files.
+    #[default]
+    #[serde(alias = "false")]
+    Disabled,
+    /// A numbered bookmark is unique across files. Setting it in one file removes it from others.
+    Replace,
+    /// The same number may exist in multiple files. Repeated jumps cycle through those files.
+    #[serde(alias = "allowDuplicates")]
+    AllowDuplicates,
+}
+
+/// Where to reveal the bookmarked line when jumping.
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum NumberedBookmarkRevealLocation {
+    /// Reveal the bookmarked line at the top of the editor.
+    Top,
+    /// Reveal the bookmarked line in the center of the editor.
+    #[default]
+    Center,
 }
 
 /// Whether to display code lenses from language servers above code elements.

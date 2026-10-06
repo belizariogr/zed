@@ -2274,7 +2274,7 @@ fn editor_page() -> SettingsPage {
         ]
     }
 
-    fn gutter_section() -> [SettingsPageItem; 10] {
+      fn gutter_section() -> [SettingsPageItem; 15] {
         [
             SettingsPageItem::SectionHeader("Gutter"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -2382,6 +2382,103 @@ fn editor_page() -> SettingsPage {
                             .gutter
                             .get_or_insert_default()
                             .bookmarks = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SectionHeader("Numbered Bookmarks"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Save Numbered Bookmarks In Project",
+                description: "Save numbered bookmarks in `.vscode/numbered-bookmarks.json` so they can be shared with the project.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("numbered_bookmarks.save_bookmarks_in_project"),
+                    pick: |settings_content| {
+                        settings_content
+                            .editor
+                            .numbered_bookmarks
+                            .as_ref()
+                            .and_then(|numbered| numbered.save_bookmarks_in_project.as_ref())
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .editor
+                            .numbered_bookmarks
+                            .get_or_insert_default()
+                            .save_bookmarks_in_project = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Warn When Numbered Bookmark Is Missing",
+                description: "Show a warning when jumping to a numbered bookmark that is not defined.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("numbered_bookmarks.show_not_defined_warning"),
+                    pick: |settings_content| {
+                        settings_content
+                            .editor
+                            .numbered_bookmarks
+                            .as_ref()
+                            .and_then(|numbered| numbered.show_not_defined_warning.as_ref())
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .editor
+                            .numbered_bookmarks
+                            .get_or_insert_default()
+                            .show_not_defined_warning = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Navigate Numbered Bookmarks Through All Files",
+                description: "How numbered bookmarks interact across files. Disabled keeps them per file, Replace makes each number unique across files, and Allow Duplicates cycles through files on repeated jumps.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("numbered_bookmarks.navigate_through_all_files"),
+                    pick: |settings_content| {
+                        settings_content
+                            .editor
+                            .numbered_bookmarks
+                            .as_ref()
+                            .and_then(|numbered| numbered.navigate_through_all_files.as_ref())
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .editor
+                            .numbered_bookmarks
+                            .get_or_insert_default()
+                            .navigate_through_all_files = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Numbered Bookmark Reveal Location",
+                description: "Where to reveal the bookmarked line when jumping.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("numbered_bookmarks.reveal_location"),
+                    pick: |settings_content| {
+                        settings_content
+                            .editor
+                            .numbered_bookmarks
+                            .as_ref()
+                            .and_then(|numbered| numbered.reveal_location.as_ref())
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .editor
+                            .numbered_bookmarks
+                            .get_or_insert_default()
+                            .reveal_location = value;
                     },
                 }),
                 metadata: None,
