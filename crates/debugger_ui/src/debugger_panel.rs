@@ -2,6 +2,7 @@ use crate::persistence::DebuggerPaneItem;
 use crate::session::DebugSession;
 use crate::session::running::RunningState;
 use crate::session::running::breakpoint_list::BreakpointList;
+use crate::session::running::variable_list::PendingWatchList;
 
 use crate::{
     ClearAllBreakpoints, Continue, ContinueThread, CopyDebugAdapterArguments, Detach,
@@ -73,6 +74,7 @@ pub struct DebugPanel {
     is_zoomed: bool,
     _subscriptions: [Subscription; 2],
     breakpoint_list: Entity<BreakpointList>,
+    pending_watch_list: Entity<PendingWatchList>,
 }
 
 impl DebugPanel {
@@ -103,6 +105,10 @@ impl DebugPanel {
                     cx.notify();
                 });
 
+            let watch_expressions = project.read(cx).dap_store().read(cx).watch_expressions();
+            let pending_watch_list =
+                cx.new(|cx| PendingWatchList::new(watch_expressions, window, cx));
+
             Self {
                 sessions_with_children: Default::default(),
                 active_session: None,
@@ -115,6 +121,7 @@ impl DebugPanel {
                     cx,
                 ),
                 project,
+                pending_watch_list,
                 workspace: workspace.weak_handle(),
                 context_menu: None,
                 fs: workspace.app_state().fs.clone(),
@@ -1866,11 +1873,9 @@ impl Render for DebugPanel {
 
                     let breakpoint_list = v_flex()
                         .group("base-breakpoint-list")
-                        .when_else(
-                            docked_to_bottom,
-                            |this| this.min_w_1_3().h_full(),
-                            |this| this.size_full().h_2_3(),
-                        )
+                        .w_full()
+                        .flex_1()
+                        .min_h_0()
                         .child(
                             h_flex()
                                 .track_focus(&self.breakpoint_list.focus_handle(cx))
@@ -1900,6 +1905,21 @@ impl Render for DebugPanel {
                             )
                         });
 
+                    let variables_and_breakpoints = v_flex()
+                        .when_else(
+                            docked_to_bottom,
+                            |this| this.min_w_1_3().h_full(),
+                            |this| this.size_full().h_2_3(),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_h_0()
+                                .child(self.pending_watch_list.clone()),
+                        )
+                        .child(Divider::horizontal())
+                        .child(breakpoint_list);
+
                     this.child(
                         v_flex()
                             .size_full()
@@ -1912,7 +1932,7 @@ impl Render for DebugPanel {
                                     this.child(
                                         h_flex()
                                             .size_full()
-                                            .child(breakpoint_list)
+                                            .child(variables_and_breakpoints)
                                             .child(Divider::vertical().h_full())
                                             .child(welcome_experience)
                                             .child(Divider::vertical().h_full()),
@@ -1923,7 +1943,7 @@ impl Render for DebugPanel {
                                             .size_full()
                                             .child(welcome_experience)
                                             .child(Divider::horizontal())
-                                            .child(breakpoint_list),
+                                            .child(variables_and_breakpoints),
                                     )
                                 }
                             }),

@@ -3,7 +3,7 @@ use super::{
     browser::LaunchedBrowser,
     dap_command::EvaluateCommand,
     locators,
-    session::{self, Session, SessionStateEvent},
+    session::{self, Session, SessionStateEvent, WatchExpressionStore},
 };
 use remote::Interactive;
 
@@ -101,6 +101,7 @@ pub struct DapStore {
     breakpoint_store: Entity<BreakpointStore>,
     worktree_store: Entity<WorktreeStore>,
     sessions: BTreeMap<SessionId, Entity<Session>>,
+    watch_expressions: Entity<WatchExpressionStore>,
     launched_browsers: Vec<LaunchedBrowser>,
     owner_windows: HashMap<WindowId, Subscription>,
     workspace_shutdown_task: Option<Shared<Task<()>>>,
@@ -246,6 +247,7 @@ impl DapStore {
             breakpoint_store,
             worktree_store,
             sessions: Default::default(),
+            watch_expressions: cx.new(|_| WatchExpressionStore::default()),
             launched_browsers: Default::default(),
             owner_windows: Default::default(),
             workspace_shutdown_task: None,
@@ -460,6 +462,10 @@ impl DapStore {
         }
     }
 
+    pub fn watch_expressions(&self) -> Entity<WatchExpressionStore> {
+        self.watch_expressions.clone()
+    }
+
     pub fn new_session(
         &mut self,
         label: Option<SharedString>,
@@ -488,6 +494,7 @@ impl DapStore {
         };
         let session = Session::new(
             self.breakpoint_store.clone(),
+            self.watch_expressions.clone(),
             session_id,
             parent_session,
             label,

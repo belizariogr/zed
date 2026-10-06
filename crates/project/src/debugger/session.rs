@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use smol::net::{TcpListener, TcpStream};
 use std::any::TypeId;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr};
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
@@ -142,6 +142,41 @@ pub struct Watcher {
     pub value: SharedString,
     pub variables_reference: u64,
     pub presentation_hint: Option<VariablePresentationHint>,
+}
+
+impl Watcher {
+    fn pending(expression: SharedString) -> Self {
+        Self {
+            expression,
+            value: "not available".into(),
+            variables_reference: 0,
+            presentation_hint: None,
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct WatchExpressionStore {
+    expressions: BTreeSet<SharedString>,
+}
+
+impl WatchExpressionStore {
+    pub fn expressions(&self) -> &BTreeSet<SharedString> {
+        &self.expressions
+    }
+
+    pub fn add(&mut self, expression: SharedString, cx: &mut Context<Self>) {
+        let expression = expression.trim();
+        if !expression.is_empty() && self.expressions.insert(expression.to_owned().into()) {
+            cx.notify();
+        }
+    }
+
+    pub fn remove(&mut self, expression: &SharedString, cx: &mut Context<Self>) {
+        if self.expressions.remove(expression) {
+            cx.notify();
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -702,6 +737,7 @@ pub struct Session {
     output_token: OutputToken,
     output: Box<circular_buffer::CircularBuffer<MAX_TRACKED_OUTPUT_EVENTS, dap::OutputEvent>>,
     watchers: HashMap<SharedString, Watcher>,
+    watch_expressions: Entity<WatchExpressionStore>,
     is_session_terminated: bool,
     requests: TypeIdHashMap<HashMap<RequestSlot, Shared<Task<Option<()>>>>>,
     pub(crate) breakpoint_store: Entity<BreakpointStore>,
@@ -833,6 +869,7 @@ impl EventEmitter<SessionStateEvent> for Session {}
 impl Session {
     pub(crate) fn new(
         breakpoint_store: Entity<BreakpointStore>,
+        watch_expressions: Entity<WatchExpressionStore>,
         session_id: SessionId,
         parent_session: Option<Entity<Session>>,
         label: Option<SharedString>,
@@ -845,6 +882,19 @@ impl Session {
         cx: &mut App,
     ) -> Entity<Self> {
         cx.new::<Self>(|cx| {
+            cx.observe(&watch_expressions, |this, store, cx| {
+                let expressions = store.read(cx).expressions();
+                this.watchers
+                    .retain(|expression, _| expressions.contains(expression));
+                for expression in expressions {
+                    this.watchers
+                        .entry(expression.clone())
+                        .or_insert_with(|| Watcher::pending(expression.clone()));
+                }
+                cx.emit(SessionEvent::Watchers);
+            })
+            .detach();
+
             cx.subscribe(&breakpoint_store, |this, store, event, cx| match event {
                 BreakpointStoreEvent::BreakpointsUpdated(path, reason) => {
                     if let Some(local) = (!this.ignore_breakpoints)
@@ -877,7 +927,13 @@ impl Session {
                 child_session_ids: HashSet::default(),
                 parent_session,
                 capabilities: Capabilities::default(),
-                watchers: HashMap::default(),
+                watchers: watch_expressions
+                    .read(cx)
+                    .expressions()
+                    .iter()
+                    .map(|expression| (expression.clone(), Watcher::pending(expression.clone())))
+                    .collect(),
+                watch_expressions,
                 output_token: OutputToken(0),
                 output: circular_buffer::CircularBuffer::boxed(),
                 requests: Default::default(),
@@ -2673,12 +2729,32 @@ impl Session {
         &self.watchers
     }
 
+    pub fn add_pending_watcher(&mut self, expression: SharedString, cx: &mut Context<Self>) {
+        let expression = expression.trim();
+        if expression.is_empty() {
+            return;
+        }
+        let expression: SharedString = expression.to_owned().into();
+        self.watch_expressions.update(cx, |store, cx| {
+            store.add(expression.clone(), cx);
+        });
+        self.watchers
+            .entry(expression.clone())
+            .or_insert_with(|| Watcher::pending(expression));
+        cx.emit(SessionEvent::Watchers);
+    }
+
     pub fn add_watcher(
         &mut self,
         expression: SharedString,
         frame_id: u64,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        let expression: SharedString = expression.trim().to_owned().into();
+        if expression.is_empty() {
+            return Task::ready(Ok(()));
+        }
+        self.add_pending_watcher(expression.clone(), cx);
         let request = self.state.request_dap(EvaluateCommand {
             expression: expression.to_string(),
             context: Some(EvaluateArgumentsContext::Watch),
@@ -2710,22 +2786,33 @@ impl Session {
             };
 
             this.update(cx, |session, cx| {
-                session.watchers.insert(expression, watcher);
-                cx.emit(SessionEvent::Watchers);
+                if session
+                    .watch_expressions
+                    .read(cx)
+                    .expressions()
+                    .contains(&expression)
+                {
+                    session.watchers.insert(expression, watcher);
+                    cx.emit(SessionEvent::Watchers);
+                }
             })
         })
     }
 
     pub fn refresh_watchers(&mut self, frame_id: u64, cx: &mut Context<Self>) {
-        let watches = self.watchers.clone();
-        for (_, watch) in watches.into_iter() {
-            self.add_watcher(watch.expression.clone(), frame_id, cx)
-                .detach();
+        let expressions = self.watch_expressions.read(cx).expressions().clone();
+        for expression in expressions {
+            self.add_watcher(expression, frame_id, cx)
+                .detach_and_log_err(cx);
         }
     }
 
-    pub fn remove_watcher(&mut self, expression: SharedString) {
+    pub fn remove_watcher(&mut self, expression: SharedString, cx: &mut Context<Self>) {
+        self.watch_expressions.update(cx, |store, cx| {
+            store.remove(&expression, cx);
+        });
         self.watchers.remove(&expression);
+        cx.emit(SessionEvent::Watchers);
     }
 
     pub fn variables(

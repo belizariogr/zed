@@ -16,7 +16,7 @@ use itertools::Itertools;
 use menu::{SelectFirst, SelectLast, SelectNext, SelectPrevious};
 use project::debugger::{
     dap_command::DataBreakpointContext,
-    session::{Session, SessionEvent, Watcher},
+    session::{Session, SessionEvent, WatchExpressionStore, Watcher},
 };
 use std::{collections::HashMap, ops::Range, sync::Arc};
 use ui::{ContextMenu, ListItem, ScrollAxes, ScrollableHandle, Tooltip, WithScrollbar, prelude::*};
@@ -207,6 +207,162 @@ pub struct VariableList {
     _subscriptions: Vec<Subscription>,
 }
 
+pub(crate) struct PendingWatchList {
+    watch_expressions: Entity<WatchExpressionStore>,
+    focus_handle: FocusHandle,
+    add_watch_editor: Option<Entity<Editor>>,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl PendingWatchList {
+    pub(crate) fn new(
+        watch_expressions: Entity<WatchExpressionStore>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let focus_handle = cx.focus_handle();
+        let subscriptions = vec![
+            cx.observe(&watch_expressions, |_, _, cx| cx.notify()),
+            cx.on_focus_out(&focus_handle, window, |this, _, window, cx| {
+                if !this
+                    .add_watch_editor
+                    .as_ref()
+                    .is_some_and(|editor| editor.focus_handle(cx).contains_focused(window, cx))
+                {
+                    this.add_watch_editor.take();
+                    cx.notify();
+                }
+            }),
+        ];
+        Self {
+            watch_expressions,
+            focus_handle,
+            add_watch_editor: None,
+            _subscriptions: subscriptions,
+        }
+    }
+
+    fn add_watch_expression(
+        &mut self,
+        _: &AddWatchExpression,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let editor = self.add_watch_editor.get_or_insert_with(|| {
+            cx.new(|cx| {
+                let mut editor = Editor::single_line(window, cx);
+                editor.set_placeholder_text("Expression to watch", window, cx);
+                editor
+            })
+        });
+        editor.focus_handle(cx).focus(window, cx);
+        cx.notify();
+    }
+
+    fn confirm(&mut self, _: &menu::Confirm, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.add_watch_editor.take() {
+            let expression = editor.read(cx).text(cx);
+            self.watch_expressions.update(cx, |store, cx| {
+                store.add(expression.into(), cx);
+            });
+            self.focus_handle.focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    fn cancel(&mut self, _: &menu::Cancel, window: &mut Window, cx: &mut Context<Self>) {
+        self.add_watch_editor.take();
+        self.focus_handle.focus(window, cx);
+        cx.notify();
+    }
+}
+
+impl Focusable for PendingWatchList {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for PendingWatchList {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let expressions = self.watch_expressions.read(cx).expressions().clone();
+        v_flex()
+            .id("pending-watch-list")
+            .size_full()
+            .min_h_0()
+            .track_focus(&self.focus_handle)
+            .key_context("VariableList")
+            .on_action(cx.listener(Self::add_watch_expression))
+            .on_action(cx.listener(Self::confirm))
+            .on_action(cx.listener(Self::cancel))
+            .child(
+                h_flex()
+                    .h(ui::Tab::container_height(cx))
+                    .p_1p5()
+                    .w_full()
+                    .justify_between()
+                    .border_b_1()
+                    .border_color(cx.theme().colors().border_variant)
+                    .child(Label::new("Variables").size(LabelSize::Small))
+                    .child(render_add_watch_button(self.focus_handle.clone())),
+            )
+            .when_some(self.add_watch_editor.clone(), |this, editor| {
+                this.child(
+                    v_flex()
+                        .w_full()
+                        .px_2()
+                        .py_1()
+                        .gap_1()
+                        .border_b_1()
+                        .border_color(cx.theme().colors().border_variant)
+                        .child(
+                            Label::new("Add Watch Expression")
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .child(editor),
+                )
+            })
+            .child(
+                v_flex()
+                    .id("pending-watch-expressions")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .children(expressions.into_iter().map(|expression| {
+                        ListItem::new(expression.clone())
+                            .selectable(false)
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .child(Label::new(expression.clone()).size(LabelSize::Small))
+                                    .child(
+                                        Label::new("not available")
+                                            .size(LabelSize::Small)
+                                            .color(Color::Muted),
+                                    ),
+                            )
+                            .end_slot(
+                                IconButton::new(
+                                    SharedString::from(format!("remove-watch-{expression}")),
+                                    IconName::Close,
+                                )
+                                .icon_size(IconSize::Indicator)
+                                .visible_on_hover("list_item")
+                                .tooltip(Tooltip::text("Remove Watch"))
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.watch_expressions.update(cx, |store, cx| {
+                                            store.remove(&expression, cx);
+                                        });
+                                        cx.stop_propagation();
+                                    },
+                                )),
+                            )
+                    })),
+            )
+    }
+}
+
 impl VariableList {
     pub(crate) fn new(
         session: Entity<Session>,
@@ -224,14 +380,12 @@ impl VariableList {
                 SessionEvent::HistoricSnapshotSelected => {
                     this.selection.take();
                     this.edited_path.take();
-                    this.add_watch_editor.take();
                     this.selected_stack_frame_id.take();
                     this.build_entries(cx);
                 }
                 SessionEvent::Stopped { .. } => {
                     this.selection.take();
                     this.edited_path.take();
-                    this.add_watch_editor.take();
                     this.selected_stack_frame_id.take();
                 }
                 SessionEvent::Variables | SessionEvent::Watchers => {
@@ -254,7 +408,7 @@ impl VariableList {
 
         let list_state = UniformListScrollHandle::default();
 
-        Self {
+        let mut list = Self {
             list_handle: list_state,
             session,
             focus_handle,
@@ -270,7 +424,9 @@ impl VariableList {
             entry_states: Default::default(),
             weak_running,
             memory_view,
-        }
+        };
+        list.build_entries(cx);
+        list
     }
 
     pub(super) fn disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
@@ -286,15 +442,16 @@ impl VariableList {
     }
 
     fn build_entries(&mut self, cx: &mut Context<Self>) {
-        let Some(stack_frame_id) = self.selected_stack_frame_id else {
-            return;
-        };
-
         let mut entries = vec![];
 
-        let scopes: Vec<_> = self.session.update(cx, |session, cx| {
-            session.scopes(stack_frame_id, cx).to_vec()
-        });
+        let scopes = self
+            .selected_stack_frame_id
+            .filter(|_| !self.disabled)
+            .map_or_else(Vec::new, |stack_frame_id| {
+                self.session.update(cx, |session, cx| {
+                    session.scopes(stack_frame_id, cx).to_vec()
+                })
+            });
 
         let mut contains_local_scope = false;
 
@@ -378,7 +535,7 @@ impl VariableList {
                 path: path.clone(),
             });
 
-            if var_state.is_expanded {
+            if var_state.is_expanded && !self.disabled {
                 let children = self
                     .session
                     .update(cx, |session, cx| session.variables(variables_reference, cx));
@@ -554,10 +711,8 @@ impl VariableList {
         if let Some(editor) = self.add_watch_editor.take() {
             let expression = editor.read(cx).text(cx);
             let expression = expression.trim();
-            if !expression.is_empty()
-                && let Some(stack_frame_id) = self.selected_stack_frame_id
-            {
-                self.add_watcher_expression(expression.to_owned().into(), stack_frame_id, cx);
+            if !expression.is_empty() {
+                self.add_watcher_expression(expression.to_owned().into(), cx);
             }
             self.focus_handle.focus(window, cx);
             cx.notify();
@@ -1009,10 +1164,6 @@ impl VariableList {
     }
 
     fn open_add_watch_expression_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_stack_frame_id.is_none() || self.disabled {
-            return;
-        }
-
         if self.add_watch_editor.is_some() {
             if let Some(editor) = self.add_watch_editor.as_ref() {
                 editor.focus_handle(cx).focus(window, cx);
@@ -1030,18 +1181,21 @@ impl VariableList {
         cx.notify();
     }
 
-    fn add_watcher_expression(
-        &mut self,
-        expression: SharedString,
-        stack_frame_id: StackFrameId,
-        cx: &mut Context<Self>,
-    ) {
+    fn add_watcher_expression(&mut self, expression: SharedString, cx: &mut Context<Self>) {
         if expression.trim().is_empty() {
             return;
         }
 
+        let stack_frame_id = self
+            .selected_stack_frame_id
+            .filter(|_| !self.disabled && !self.session.read(cx).is_terminated());
         let add_watcher_task = self.session.update(cx, |session, cx| {
-            session.add_watcher(expression, stack_frame_id, cx)
+            if let Some(stack_frame_id) = stack_frame_id {
+                session.add_watcher(expression, stack_frame_id, cx)
+            } else {
+                session.add_pending_watcher(expression, cx);
+                gpui::Task::ready(Ok(()))
+            }
         });
 
         cx.spawn(async move |this, cx| {
@@ -1067,8 +1221,8 @@ impl VariableList {
             return;
         };
 
-        self.session.update(cx, |session, _| {
-            session.remove_watcher(watcher.expression.clone());
+        self.session.update(cx, |session, cx| {
+            session.remove_watcher(watcher.expression.clone(), cx);
         });
         self.build_entries(cx);
     }
@@ -1646,34 +1800,34 @@ impl Focusable for VariableList {
 
 impl VariableList {
     pub(crate) fn render_control_strip(&self) -> AnyElement {
-        let can_add_watch = self.selected_stack_frame_id.is_some() && !self.disabled;
-        let focus_handle = self.focus_handle.clone();
-
-        h_flex()
-            .child(
-                IconButton::new("variable-list-add-watch", IconName::Plus)
-                    .icon_size(IconSize::Small)
-                    .disabled(!can_add_watch)
-                    .tooltip({
-                        let focus_handle = focus_handle.clone();
-                        move |_window, cx| {
-                            Tooltip::for_action_in(
-                                "Add Watch Expression",
-                                &AddWatchExpression,
-                                &focus_handle,
-                                cx,
-                            )
-                        }
-                    })
-                    .on_click({
-                        move |_, window, cx| {
-                            focus_handle.focus(window, cx);
-                            window.dispatch_action(AddWatchExpression.boxed_clone(), cx);
-                        }
-                    }),
-            )
-            .into_any_element()
+        render_add_watch_button(self.focus_handle.clone())
     }
+}
+
+fn render_add_watch_button(focus_handle: FocusHandle) -> AnyElement {
+    h_flex()
+        .child(
+            IconButton::new("variable-list-add-watch", IconName::Plus)
+                .icon_size(IconSize::Small)
+                .tooltip({
+                    let focus_handle = focus_handle.clone();
+                    move |_window, cx| {
+                        Tooltip::for_action_in(
+                            "Add Watch Expression",
+                            &AddWatchExpression,
+                            &focus_handle,
+                            cx,
+                        )
+                    }
+                })
+                .on_click({
+                    move |_, window, cx| {
+                        focus_handle.focus(window, cx);
+                        window.dispatch_action(AddWatchExpression.boxed_clone(), cx);
+                    }
+                }),
+        )
+        .into_any_element()
 }
 
 impl Render for VariableList {

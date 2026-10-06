@@ -1,14 +1,15 @@
 #![expect(clippy::result_large_err)]
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use crate::{
     DebugPanel,
     persistence::DebuggerPaneItem,
     session::running::variable_list::{
-        AddWatch, CollapseSelectedEntry, ExpandSelectedEntry, RemoveWatch,
+        AddWatch, AddWatchExpression, CollapseSelectedEntry, ExpandSelectedEntry, PendingWatchList,
+        RemoveWatch,
     },
     tests::{active_debug_session_panel, init_test, init_test_workspace, start_debug_session},
 };
@@ -17,13 +18,233 @@ use dap::{
     ErrorResponse, Scope, StackFrame, Variable,
     requests::{Evaluate, Initialize, Launch, Scopes, StackTrace, Variables},
 };
-use gpui::{BackgroundExecutor, TestAppContext, VisualTestContext};
+use gpui::{BackgroundExecutor, Focusable as _, TestAppContext, VisualTestContext};
 use menu::{SelectFirst, SelectNext, SelectPrevious};
 use project::{FakeFs, Project};
 use serde_json::json;
 use ui::SharedString;
 use unindent::Unindent as _;
 use util::path;
+
+#[gpui::test]
+async fn test_watch_expression_before_debug_session(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/project"), json!({"main.js": "let counter = 42;"}))
+        .await;
+    let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+    let watch_expressions = project.read_with(cx, |project, cx| {
+        project.dap_store().read(cx).watch_expressions()
+    });
+    let window =
+        cx.add_window(|window, cx| PendingWatchList::new(watch_expressions.clone(), window, cx));
+    window
+        .update(cx, |list, window, cx| {
+            list.focus_handle(cx).focus(window, cx)
+        })
+        .expect("pending watch window exists");
+    let visual = &mut VisualTestContext::from_window(*window, cx);
+    visual.dispatch_action(AddWatchExpression);
+    visual.simulate_input("  counter  ");
+    visual.dispatch_action(menu::Confirm);
+    visual.run_until_parked();
+    watch_expressions.read_with(visual, |store, _| {
+        assert_eq!(
+            store
+                .expressions()
+                .iter()
+                .map(|expression| expression.as_ref())
+                .collect::<Vec<_>>(),
+            ["counter"]
+        );
+    });
+
+    visual.dispatch_action(AddWatchExpression);
+    visual.simulate_input("discarded");
+    visual.dispatch_action(menu::Cancel);
+    visual.run_until_parked();
+    watch_expressions.read_with(visual, |store, _| {
+        assert_eq!(store.expressions().len(), 1);
+    });
+
+    let workspace = init_test_workspace(&project, cx).await;
+    let first_session =
+        start_debug_session(&workspace, cx, |_| {}).expect("first debug session starts");
+    let second_session =
+        start_debug_session(&workspace, cx, |_| {}).expect("second debug session starts");
+    for session in [&first_session, &second_session] {
+        session.read_with(cx, |session, _| {
+            let watcher = session
+                .watchers()
+                .get(&SharedString::from("counter"))
+                .expect("expression is carried into each new session");
+            assert_eq!(watcher.value.as_ref(), "not available");
+        });
+    }
+
+    first_session.update(cx, |session, cx| {
+        session.remove_watcher("counter".into(), cx);
+    });
+    cx.run_until_parked();
+    watch_expressions.read_with(cx, |store, _| assert!(store.expressions().is_empty()));
+    second_session.read_with(cx, |session, _| assert!(session.watchers().is_empty()));
+}
+
+#[gpui::test]
+async fn test_watch_expression_while_running_and_after_pause(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/project"), json!({"main.js": "let counter = 42;"}))
+        .await;
+    let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+    let workspace = init_test_workspace(&project, cx).await;
+    workspace
+        .update(cx, |workspace, window, cx| {
+            workspace.focus_panel::<DebugPanel>(window, cx);
+        })
+        .expect("workspace exists");
+    let cx = &mut VisualTestContext::from_window(*workspace, cx);
+    let evaluations = Arc::new(AtomicUsize::new(0));
+    let session = start_debug_session(&workspace, cx, {
+        let evaluations = evaluations.clone();
+        move |client| {
+            client.on_request::<dap::requests::Threads, _>(|_, _| {
+                Ok(dap::ThreadsResponse {
+                    threads: vec![dap::Thread {
+                        id: 1,
+                        name: "Main".into(),
+                    }],
+                })
+            });
+            client.on_request::<StackTrace, _>(|_, _| {
+                Ok(dap::StackTraceResponse {
+                    stack_frames: vec![StackFrame {
+                        id: 1,
+                        name: "main".into(),
+                        source: Some(dap::Source {
+                            name: Some("main.js".into()),
+                            path: Some(path!("/project/main.js").into()),
+                            source_reference: None,
+                            presentation_hint: None,
+                            origin: None,
+                            sources: None,
+                            adapter_data: None,
+                            checksums: None,
+                        }),
+                        line: 1,
+                        column: 1,
+                        end_line: None,
+                        end_column: None,
+                        can_restart: None,
+                        instruction_pointer_reference: None,
+                        module_id: None,
+                        presentation_hint: None,
+                    }],
+                    total_frames: None,
+                })
+            });
+            client.on_request::<Scopes, _>(|_, _| Ok(dap::ScopesResponse { scopes: Vec::new() }));
+            let evaluations = evaluations.clone();
+            client.on_request::<Evaluate, _>(move |_, arguments| {
+                assert_eq!(arguments.frame_id, Some(1));
+                evaluations.fetch_add(1, Ordering::SeqCst);
+                Ok(dap::EvaluateResponse {
+                    result: "42".into(),
+                    type_: None,
+                    presentation_hint: None,
+                    variables_reference: 0,
+                    named_variables: None,
+                    indexed_variables: None,
+                    memory_reference: None,
+                    value_location_reference: None,
+                })
+            });
+        }
+    })
+    .expect("debug session starts");
+    let client = session.update(cx, |session, _| {
+        session.adapter_client().expect("debug adapter exists")
+    });
+    let running_state =
+        active_debug_session_panel(workspace, cx).update_in(cx, |item, window, cx| {
+            let running = item.running_state().clone();
+            let list = running.update(cx, |state, cx| {
+                state.activate_item(DebuggerPaneItem::Variables, window, cx);
+                state.variable_list().clone()
+            });
+            list.update(cx, |_, cx| cx.focus_self(window));
+            running
+        });
+    cx.run_until_parked();
+    cx.dispatch_action(AddWatchExpression);
+    cx.simulate_input("counter");
+    cx.dispatch_action(menu::Confirm);
+    cx.run_until_parked();
+    assert_eq!(evaluations.load(Ordering::SeqCst), 0);
+    session.read_with(cx, |session, _| {
+        let watcher = session
+            .watchers()
+            .get(&SharedString::from("counter"))
+            .expect("expression can be added before a breakpoint");
+        assert_eq!(watcher.value.as_ref(), "not available");
+    });
+    running_state.update(cx, |state, cx| {
+        state.variable_list().update(cx, |list, _| {
+            list.assert_visual_entries(vec!["> counter"]);
+        });
+    });
+
+    client
+        .fake_event(dap::messages::Events::Stopped(dap::StoppedEvent {
+            reason: dap::StoppedEventReason::Pause,
+            description: None,
+            thread_id: Some(1),
+            preserve_focus_hint: None,
+            text: None,
+            all_threads_stopped: Some(true),
+            hit_breakpoint_ids: None,
+        }))
+        .await;
+    cx.run_until_parked();
+    assert!(evaluations.load(Ordering::SeqCst) > 0);
+    session.read_with(cx, |session, _| {
+        assert_eq!(
+            session
+                .watchers()
+                .get(&SharedString::from("counter"))
+                .expect("watch remains after pausing")
+                .value
+                .as_ref(),
+            "42"
+        );
+    });
+
+    client
+        .fake_event(dap::messages::Events::Continued(dap::ContinuedEvent {
+            thread_id: 1,
+            all_threads_continued: Some(true),
+        }))
+        .await;
+    cx.run_until_parked();
+    let evaluation_count = evaluations.load(Ordering::SeqCst);
+    running_state.update_in(cx, |state, window, cx| {
+        state
+            .variable_list()
+            .update(cx, |_, cx| cx.focus_self(window));
+    });
+    cx.dispatch_action(AddWatchExpression);
+    cx.simulate_input("counter + 1");
+    cx.dispatch_action(menu::Confirm);
+    cx.run_until_parked();
+    assert_eq!(evaluations.load(Ordering::SeqCst), evaluation_count);
+    session.read_with(cx, |session, _| {
+        assert!(
+            session
+                .watchers()
+                .contains_key(&SharedString::from("counter + 1"))
+        );
+    });
+}
 
 /// This only tests fetching one scope and 2 variables for a single stackframe
 #[gpui::test]
