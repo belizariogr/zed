@@ -208,6 +208,7 @@ Newest first. Hashes may change if history is rewritten; match by message/intent
 
 | Commit | Summary | What to preserve |
 | --- | --- | --- |
+| Match by summary | Navigate browser launches after the page debugger is configured | Open the URL from `launch.json` after binding and configuring the browser page's child session, avoiding a cached service worker deadlock while preserving breakpoints, URL filters, browser profiles, and lifecycle cleanup (`dap_adapters` javascript, `project` debugger session). |
 | Match by summary | Allow adding watch expressions without an active debug session | Always enable add-watch controls, show Variables before starting debug, retain watch expressions in the project's DAP store across sessions, and evaluate them when a stack frame becomes available (`debugger_ui`, `project` debugger session/dap_store). |
 | Match by summary | Add a macOS build and install script | `script/install-macos` builds the fork in release mode as stable by default, preserves macOS bundle icons and document associations, and installs the app and CLI. |
 | Match by summary | Overlay the stack frame arrow on gutter breakpoints | VS Code-style outlined stack frame arrow drawn above (and around) a smaller breakpoint circle without blocking clicks, so breakpoints can be removed/re-added on the stopped line; `assets` build script so newly added icons get embedded in release builds (`editor`, `assets/icons/debug_stack_frame.svg`, `crates/assets/build.rs`). |

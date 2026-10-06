@@ -39,6 +39,95 @@ use workspace::pane_group::SplitDirection;
 use workspace::{Item, dock::Panel, move_active_item};
 
 #[gpui::test]
+async fn test_browser_navigates_after_child_configuration(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/project"), json!({"main.js": "console.log(42);"}))
+        .await;
+    let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+    let workspace = init_test_workspace(&project, cx).await;
+    let cx = &mut VisualTestContext::from_window(*workspace, cx);
+    let url = "http://localhost:3000/?name=\"test\"";
+    let session = start_debug_session_with(
+        &workspace,
+        cx,
+        DebugTaskDefinition {
+            adapter: "fake-adapter".into(),
+            label: "Browser".into(),
+            config: json!({
+                "type": "pwa-chrome", "request": "launch", "url": "about:blank",
+                dap::adapters::ZED_BROWSER_LAUNCH_URL: url,
+            }),
+            tcp_connection: None,
+        },
+        |_| {},
+    )
+    .expect("parent session should start");
+    let client = session.update(cx, |session, _| {
+        session.adapter_client().expect("parent adapter")
+    });
+    let evaluations = Arc::new(AtomicUsize::new(0));
+    let _subscription = project::debugger::test::intercept_debug_sessions(cx, {
+        let evaluations = evaluations.clone();
+        move |client| {
+            let configured = Arc::new(AtomicBool::new(false));
+            client.on_request::<dap::requests::Initialize, _>(|_, _| {
+                Ok(dap::Capabilities {
+                    supports_configuration_done_request: Some(true),
+                    ..Default::default()
+                })
+            });
+            client.on_request::<dap::requests::ConfigurationDone, _>({
+                let configured = configured.clone();
+                move |_, _| {
+                    configured.store(true, Ordering::SeqCst);
+                    Ok(())
+                }
+            });
+            client.on_request::<dap::requests::Evaluate, _>({
+                let evaluations = evaluations.clone();
+                move |_, arguments| {
+                    assert!(configured.load(Ordering::SeqCst));
+                    assert_eq!(arguments.frame_id, None);
+                    assert_eq!(arguments.context, Some(dap::EvaluateArgumentsContext::Repl));
+                    assert_eq!(
+                        arguments.expression,
+                        format!("globalThis.location.href = {}", json!(url))
+                    );
+                    evaluations.fetch_add(1, Ordering::SeqCst);
+                    Ok(dap::EvaluateResponse {
+                        result: url.into(),
+                        variables_reference: 0,
+                        type_: None,
+                        presentation_hint: None,
+                        named_variables: None,
+                        indexed_variables: None,
+                        memory_reference: None,
+                        value_location_reference: None,
+                    })
+                }
+            });
+        }
+    });
+    for (task_type, name, expected_evaluations) in [
+        ("pwa-node", "Node", 0),
+        ("pwa-chrome", "Restored page", 1),
+        ("pwa-chrome", "about:blank", 1),
+    ] {
+        client
+            .fake_reverse_request::<StartDebugging>(StartDebuggingRequestArguments {
+                request: StartDebuggingRequestArgumentsRequest::Launch,
+                configuration: json!({
+                    "type": task_type, "name": name, "__pendingTargetId": name,
+                }),
+            })
+            .await;
+        cx.run_until_parked();
+        assert_eq!(evaluations.load(Ordering::SeqCst), expected_evaluations);
+    }
+}
+
+#[gpui::test]
 async fn test_breakpoint_activates_session_window(cx: &mut TestAppContext) {
     init_test(cx);
     let fs = FakeFs::new(cx.executor());

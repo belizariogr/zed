@@ -189,6 +189,8 @@ impl DebugTaskDefinition {
     }
 }
 
+pub const ZED_BROWSER_LAUNCH_URL: &str = "__zedBrowserLaunchUrl";
+
 /// Created from a [DebugTaskDefinition], this struct describes how to spawn the debugger to create a previously-configured debug session.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DebugAdapterBinary {

@@ -129,6 +129,7 @@ impl JsDebugAdapter {
                     .entry("browserLaunchLocation")
                     .or_insert("ui".into());
             }
+            configure_browser_navigation(configuration);
         }
 
         let adapter_path = if let Some(user_installed_path) = user_installed_path {
@@ -595,9 +596,88 @@ async fn configure_browser_lifecycle(
     Ok(())
 }
 
+fn configure_browser_navigation(configuration: &mut serde_json::Map<String, Value>) {
+    if configuration.get("request").and_then(Value::as_str) != Some("launch")
+        || !matches!(
+            configuration.get("type").and_then(Value::as_str),
+            Some("pwa-chrome" | "pwa-msedge")
+        )
+        || configuration
+            .get("browserLaunchLocation")
+            .and_then(Value::as_str)
+            == Some("ui")
+        || configuration
+            .get("file")
+            .is_some_and(|file| !file.is_null())
+        || configuration.contains_key("skipNavigateForTest")
+    {
+        return;
+    }
+    let Some(url) = configuration.get("url").and_then(Value::as_str) else {
+        return;
+    };
+    if url.is_empty() || url == "about:blank" {
+        return;
+    }
+    let url = Value::String(url.to_owned());
+    configuration
+        .entry("urlFilter")
+        .or_insert_with(|| url.clone());
+    configuration.insert(dap::adapters::ZED_BROWSER_LAUNCH_URL.to_owned(), url);
+    // js-debug can deadlock on a cached service worker if navigation starts before
+    // the page's child session is bound and its queued CDP events can be processed.
+    configuration.insert("url".to_owned(), "about:blank".into());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_navigation_waits_for_the_page_session() {
+        for task_type in ["pwa-chrome", "pwa-msedge"] {
+            let mut configuration = json!({
+                "type": task_type,
+                "request": "launch",
+                "url": "http://localhost:3000/",
+                "runtimeArgs": ["--user-data-dir=/chrome-dev"],
+            });
+            configure_browser_navigation(configuration.as_object_mut().expect("configuration"));
+            assert_eq!(configuration["url"], "about:blank");
+            assert_eq!(configuration["urlFilter"], "http://localhost:3000/");
+            assert_eq!(
+                configuration[dap::adapters::ZED_BROWSER_LAUNCH_URL],
+                "http://localhost:3000/"
+            );
+            assert_eq!(
+                configuration["runtimeArgs"],
+                json!(["--user-data-dir=/chrome-dev"])
+            );
+        }
+    }
+
+    #[test]
+    fn browser_navigation_preserves_explicit_filters_and_other_launches() {
+        let mut configuration = json!({
+            "type": "pwa-chrome", "request": "launch", "url": "http://localhost:3000/",
+            "urlFilter": "http://localhost:3000/*",
+        });
+        configure_browser_navigation(configuration.as_object_mut().expect("configuration"));
+        assert_eq!(configuration["urlFilter"], "http://localhost:3000/*");
+
+        for mut configuration in [
+            json!({"type": "pwa-chrome", "request": "attach", "url": "http://localhost:3000/"}),
+            json!({"type": "pwa-node", "request": "launch", "url": "http://localhost:3000/"}),
+            json!({"type": "pwa-chrome", "request": "launch", "url": "http://localhost:3000/", "browserLaunchLocation": "ui"}),
+            json!({"type": "pwa-chrome", "request": "launch", "url": "http://localhost:3000/", "file": "index.html"}),
+            json!({"type": "pwa-chrome", "request": "launch", "url": "about:blank"}),
+            json!({"type": "pwa-chrome", "request": "launch"}),
+        ] {
+            let expected = configuration.clone();
+            configure_browser_navigation(configuration.as_object_mut().expect("configuration"));
+            assert_eq!(configuration, expected);
+        }
+    }
 
     #[test]
     fn browser_launch_preserves_unrelated_tabs_and_uses_a_reconnectable_connection() -> Result<()> {

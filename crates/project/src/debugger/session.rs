@@ -734,6 +734,7 @@ pub struct Session {
     pub(super) capabilities: Capabilities,
     child_session_ids: HashSet<SessionId>,
     parent_session: Option<Entity<Session>>,
+    browser_launch_url: Option<String>,
     output_token: OutputToken,
     output: Box<circular_buffer::CircularBuffer<MAX_TRACKED_OUTPUT_EVENTS, dap::OutputEvent>>,
     watchers: HashMap<SharedString, Watcher>,
@@ -926,6 +927,7 @@ impl Session {
                 id: session_id,
                 child_session_ids: HashSet::default(),
                 parent_session,
+                browser_launch_url: None,
                 capabilities: Capabilities::default(),
                 watchers: watch_expressions
                     .read(cx)
@@ -975,6 +977,12 @@ impl Session {
         dap_store: WeakEntity<DapStore>,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        self.browser_launch_url = binary
+            .request_args
+            .configuration
+            .get(dap::adapters::ZED_BROWSER_LAUNCH_URL)
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         let (message_tx, mut message_rx) = futures::channel::mpsc::unbounded();
         let (initialized_tx, initialized_rx) = futures::channel::oneshot::channel();
 
@@ -1039,11 +1047,17 @@ impl Session {
             this.update(cx, |session, cx| session.request_initialize(cx))?
                 .await?;
 
-            let result = this
+            let mut result = this
                 .update(cx, |session, cx| {
                     session.initialize_sequence(initialized_rx, dap_store.clone(), cx)
                 })?
                 .await;
+
+            if result.is_ok() {
+                result = this
+                    .update(cx, |session, cx| session.navigate_to_browser_launch_url(cx))?
+                    .await;
+            }
 
             if result.is_ok()
                 && this.read_with(cx, |session, _| session.parent_session.is_none())?
@@ -1055,8 +1069,10 @@ impl Session {
                     .await?;
             }
 
-            if result.is_err() {
+            if let Err(error) = &result {
                 let mut console = this.update(cx, |session, cx| session.console_output(cx))?;
+
+                console.send(format!("error: {error:#}")).await.log_err();
 
                 console
                     .send(format!(
@@ -1069,6 +1085,43 @@ impl Session {
             }
 
             result
+        })
+    }
+
+    fn navigate_to_browser_launch_url(&self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let Some(running) = self.as_running() else {
+            return Task::ready(Ok(()));
+        };
+        let configuration = &running.binary.request_args.configuration;
+        if !matches!(
+            configuration.get("type").and_then(Value::as_str),
+            Some("pwa-chrome" | "pwa-msedge")
+        ) || configuration
+            .get("__pendingTargetId")
+            .and_then(Value::as_str)
+            .is_none()
+        {
+            return Task::ready(Ok(()));
+        }
+        let Some(parent_session) = &self.parent_session else {
+            return Task::ready(Ok(()));
+        };
+        // The launcher binds the main page first; workers and frames belong to that page session.
+        let Some(url) = parent_session.update(cx, |parent, _| parent.browser_launch_url.take())
+        else {
+            return Task::ready(Ok(()));
+        };
+        let request = running.request(EvaluateCommand {
+            expression: format!("globalThis.location.href = {}", Value::String(url)),
+            frame_id: None,
+            context: Some(EvaluateArgumentsContext::Repl),
+            source: None,
+        });
+        cx.background_spawn(async move {
+            request
+                .await
+                .context("Opening the configured browser URL")?;
+            Ok(())
         })
     }
 
