@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  cat <<EOF
+Usage: ${0##*/} [-h | --help]
+
+Builds Zed in release mode as the stable channel and installs the app and CLI.
+
+Environment:
+  APPLICATIONS_DIR     App directory (default: /Applications)
+  CLI_DIR              CLI directory (default: \$HOME/.local/bin)
+  SUDO                 Privilege helper, used only if needed (default: sudo)
+  ZED_RELEASE_CHANNEL  Channel baked into the binary (default: stable)
+  CARGO_TARGET_DIR     Cargo build directory (default: Cargo configuration)
+
+Requires Rust, Xcode with the Metal toolchain, CMake, jq, and Python 3.
+EOF
+}
+
+if [[ $# -gt 0 ]]; then
+  if [[ $# -eq 1 && ( "$1" == "-h" || "$1" == "--help" ) ]]; then
+    usage
+    exit 0
+  fi
+  usage >&2
+  exit 1
+fi
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "error: this script requires macOS." >&2
+  exit 1
+fi
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+if ! command -v cargo >/dev/null 2>&1 && [[ -f "${HOME}/.cargo/env" ]]; then
+  # shellcheck source=/dev/null
+  source "${HOME}/.cargo/env"
+fi
+
+for dependency in cargo rustc cmake jq python3 xcrun codesign ditto sips iconutil; do
+  if ! command -v "$dependency" >/dev/null 2>&1; then
+    echo "error: ${dependency} not found. See docs/src/development/macos.md." >&2
+    exit 1
+  fi
+done
+
+if ! xcrun -sdk macosx metal --version >/dev/null 2>&1; then
+  echo "error: install the Metal toolchain with: xcodebuild -downloadComponent MetalToolchain" >&2
+  exit 1
+fi
+
+channel="${ZED_RELEASE_CHANNEL:-stable}"
+case "$channel" in
+  stable | preview | nightly | dev) ;;
+  *)
+    echo "error: invalid ZED_RELEASE_CHANNEL '${channel}' (expected stable, preview, nightly, or dev)." >&2
+    exit 1
+    ;;
+esac
+
+applications_directory="${APPLICATIONS_DIR:-/Applications}"
+cli_directory="${CLI_DIR:-${HOME}/.local/bin}"
+privilege_helper="${SUDO:-sudo}"
+
+can_write_directory() {
+  local directory="$1"
+  while [[ ! -e "$directory" ]]; do
+    directory="$(dirname "$directory")"
+  done
+  [[ -d "$directory" && -w "$directory" ]]
+}
+
+temporary_directory="$(mktemp -d)"
+installation_directory=""
+installed_app=""
+installation_complete=false
+installation_command=(env)
+cleanup() {
+  if [[ -n "$installation_directory" ]]; then
+    if [[ "$installation_complete" != true && -d "$installation_directory/previous.app" ]]; then
+      "${installation_command[@]}" mv "$installation_directory/previous.app" "$installed_app"
+    fi
+    "${installation_command[@]}" rm -rf "$installation_directory"
+  fi
+  rm -rf "$temporary_directory"
+}
+trap cleanup EXIT
+
+cargo metadata --no-deps --format-version=1 >"$temporary_directory/metadata.json"
+target_directory="$(jq -er '.target_directory' "$temporary_directory/metadata.json")"
+version="$(jq -er '.packages[] | select(.name == "zed") | .version' "$temporary_directory/metadata.json")"
+app_name="$(jq -er --arg channel "$channel" '.packages[] | select(.name == "zed") | .metadata["bundle-" + $channel].name' "$temporary_directory/metadata.json")"
+target_triple="$(rustc --version --verbose | sed -n 's/^host: //p')"
+case "$target_triple" in
+  aarch64-apple-darwin | x86_64-apple-darwin) ;;
+  *)
+    echo "error: unsupported macOS architecture '${target_triple}'." >&2
+    exit 1
+    ;;
+esac
+
+export ZED_RELEASE_CHANNEL="$channel"
+export RELEASE_VERSION="$version"
+export ZED_UPDATE_EXPLANATION="Rebuild with ${root}/script/install-macos"
+# Local installs use the system Git rather than the Git shipped in distribution bundles.
+export ZED_BUNDLE=false
+export CXXFLAGS="${CXXFLAGS:-} -stdlib=libc++"
+
+echo "==> Building Zed ${version} (${channel}) in release mode"
+cargo build --release --locked --package zed --package cli --target "$target_triple"
+
+release_directory="${target_directory}/${target_triple}/release"
+app_path="${release_directory}/bundle/osx/${app_name}.app"
+staged_app="${temporary_directory}/${app_name}.app"
+mkdir -p "$staged_app/Contents/MacOS" "$staged_app/Contents/Resources"
+install -m755 "$release_directory/zed" "$staged_app/Contents/MacOS/zed"
+install -m755 "$release_directory/cli" "$staged_app/Contents/MacOS/cli"
+cp crates/zed/resources/Document.icns "$staged_app/Contents/Resources/Document.icns"
+
+python3 - "$temporary_directory/metadata.json" "$channel" "$staged_app" <<'PY'
+import glob
+import json
+import pathlib
+import plistlib
+import sys
+
+metadata_path, channel, app_path = sys.argv[1:]
+metadata = json.loads(pathlib.Path(metadata_path).read_text())
+package = next(package for package in metadata["packages"] if package["name"] == "zed")
+bundle = package["metadata"][f"bundle-{channel}"]
+package_directory = pathlib.Path(package["manifest_path"]).parent
+info = {
+    "CFBundleDevelopmentRegion": "en",
+    "CFBundleExecutable": "zed",
+    "CFBundleIconFile": "Zed.icns",
+    "CFBundleIdentifier": bundle["identifier"],
+    "CFBundleInfoDictionaryVersion": "6.0",
+    "CFBundleName": bundle["name"],
+    "CFBundleDisplayName": bundle["name"],
+    "CFBundlePackageType": "APPL",
+    "CFBundleShortVersionString": package["version"],
+    "CFBundleVersion": package["version"],
+    "LSMinimumSystemVersion": bundle["osx_minimum_system_version"],
+    "NSHighResolutionCapable": True,
+    "CFBundleURLTypes": [{"CFBundleURLSchemes": bundle["osx_url_schemes"]}],
+}
+for pattern in bundle["osx_info_plist_exts"]:
+    for filename in sorted(glob.glob(str(package_directory / pattern))):
+        fragment = pathlib.Path(filename).read_text()
+        info.update(plistlib.loads(f"<plist version='1.0'><dict>{fragment}</dict></plist>".encode()))
+with (pathlib.Path(app_path) / "Contents/Info.plist").open("wb") as output:
+    plistlib.dump(info, output)
+PY
+
+icon_suffix=""
+if [[ "$channel" != stable ]]; then
+  icon_suffix="-${channel}"
+fi
+icon_set="${temporary_directory}/Zed.iconset"
+mkdir -p "$icon_set"
+for size in 16 32 128 256 512; do
+  sips -z "$size" "$size" "crates/zed/resources/app-icon${icon_suffix}.png" --out "$icon_set/icon_${size}x${size}.png" >/dev/null
+  doubled_size=$((size * 2))
+  sips -z "$doubled_size" "$doubled_size" "crates/zed/resources/app-icon${icon_suffix}@2x.png" --out "$icon_set/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$icon_set" -o "$staged_app/Contents/Resources/Zed.icns"
+codesign --force --deep --sign - --entitlements crates/zed/resources/zed.entitlements "$staged_app"
+codesign --verify --deep --strict "$staged_app"
+script/verify-macos-document-icon "$staged_app"
+mkdir -p "$(dirname "$app_path")"
+rm -rf "$app_path"
+ditto "$staged_app" "$app_path"
+
+if ! can_write_directory "$applications_directory"; then
+  installation_command=("$privilege_helper")
+fi
+"${installation_command[@]}" mkdir -p "$applications_directory"
+applications_directory="$(cd "$applications_directory" && pwd)"
+installed_app="${applications_directory}/${app_name}.app"
+installation_directory="$("${installation_command[@]}" mktemp -d "$applications_directory/.zed-install.XXXXXX")"
+"${installation_command[@]}" ditto "$app_path" "$installation_directory/${app_name}.app"
+if [[ -e "$installed_app" ]]; then
+  "${installation_command[@]}" mv "$installed_app" "$installation_directory/previous.app"
+fi
+"${installation_command[@]}" mv "$installation_directory/${app_name}.app" "$installed_app"
+installation_complete=true
+
+cli_command=(env)
+if ! can_write_directory "$cli_directory"; then
+  cli_command=("$privilege_helper")
+fi
+"${cli_command[@]}" mkdir -p "$cli_directory"
+"${cli_command[@]}" ln -sfn "$installed_app/Contents/MacOS/cli" "$cli_directory/zed"
+
+echo "==> Installed ${installed_app}"
+"$cli_directory/zed" --version
+echo "Run with: ${cli_directory}/zed"
+if [[ ":${PATH}:" != *":${cli_directory}:"* ]]; then
+  echo "Add ${cli_directory} to your PATH to run with: zed"
+fi
