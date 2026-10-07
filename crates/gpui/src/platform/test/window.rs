@@ -50,6 +50,7 @@ pub(crate) struct TestWindowState {
     frame_callback_pending: bool,
     input_handler: Option<PlatformInputHandler>,
     text_input_configurations: Vec<TextInputConfiguration>,
+    pub(crate) suppressed_system_hotkeys: Vec<crate::Keystroke>,
     text_input_state_changes: Vec<TextInputStateChange>,
     is_fullscreen: bool,
     scale_factor: f32,
@@ -123,6 +124,7 @@ impl TestWindow {
             frame_callback_pending: false,
             input_handler: None,
             text_input_configurations: Vec::new(),
+            suppressed_system_hotkeys: Vec::new(),
             text_input_state_changes: Vec::new(),
             is_fullscreen: false,
             // Preserve the test platform's historical 2x default.
@@ -368,6 +370,10 @@ impl PlatformWindow for TestWindow {
 
     fn take_input_handler(&mut self) -> Option<PlatformInputHandler> {
         self.0.lock().input_handler.take()
+    }
+
+    fn set_system_hotkeys_to_suppress(&self, keystrokes: &[crate::Keystroke]) {
+        self.0.lock().suppressed_system_hotkeys = keystrokes.to_vec();
     }
 
     fn set_text_input_configuration(&mut self, configuration: TextInputConfiguration) {

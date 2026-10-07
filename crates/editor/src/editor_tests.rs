@@ -49246,6 +49246,77 @@ async fn assert_range_format_merge(
     assert!(!cx.read(|cx| editor.is_dirty(cx)));
 }
 
+#[cfg(target_os = "macos")]
+#[gpui::test]
+async fn test_numbered_bookmark_system_hotkeys_follow_active_tab(cx: &mut TestAppContext) {
+    let (workspace, _, project, first_editor, mut cx) = init_bookmarks_tab_test(
+        cx,
+        json!({ "main.rs": "first\nsecond\n", "other.rs": "other\n" }),
+    )
+    .await;
+    let suppressed_numbers = |cx: &VisualTestContext| {
+        cx.suppressed_system_hotkeys()
+            .into_iter()
+            .map(|keystroke| {
+                assert_eq!(
+                    keystroke.modifiers,
+                    gpui::Modifiers {
+                        platform: true,
+                        ..gpui::Modifiers::none()
+                    }
+                );
+                keystroke.key
+            })
+            .collect::<Vec<_>>()
+    };
+    cx.run_until_parked();
+    assert!(suppressed_numbers(&cx).is_empty());
+    first_editor.update_in(&mut cx, |editor, window, cx| {
+        editor.toggle_numbered_bookmark_0(&crate::ToggleNumberedBookmark0, window, cx);
+        editor.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
+            selections.select_ranges([Point::new(1, 0)..Point::new(1, 0)]);
+        });
+        editor.toggle_numbered_bookmark_4(&crate::ToggleNumberedBookmark4, window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(suppressed_numbers(&cx), ["0", "4"]);
+
+    let second_editor = open_bookmarks_test_editor(&workspace, &project, "other.rs", &mut cx).await;
+    cx.run_until_parked();
+    assert!(suppressed_numbers(&cx).is_empty());
+    second_editor.update_in(&mut cx, |editor, window, cx| {
+        editor.toggle_numbered_bookmark_9(&crate::ToggleNumberedBookmark9, window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(suppressed_numbers(&cx), ["9"]);
+
+    first_editor.update_in(&mut cx, |editor, window, cx| {
+        editor.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
+            selections.select_ranges([Point::new(0, 0)..Point::new(0, 0)]);
+        });
+        editor.toggle_numbered_bookmark_0(&crate::ToggleNumberedBookmark0, window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(suppressed_numbers(&cx), ["9"]);
+    workspace.update_in(&mut cx, |workspace, window, cx| {
+        assert!(workspace.activate_item(&first_editor, true, true, window, cx));
+    });
+    cx.run_until_parked();
+    assert_eq!(suppressed_numbers(&cx), ["4"]);
+
+    cx.update(|window, cx| {
+        let focus_handle = cx.focus_handle();
+        window.focus(&focus_handle, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(suppressed_numbers(&cx), ["4"]);
+    first_editor.update_in(&mut cx, |editor, window, cx| {
+        editor.clear_numbered_bookmarks(&crate::ClearNumberedBookmarks, window, cx);
+    });
+    cx.run_until_parked();
+    assert!(suppressed_numbers(&cx).is_empty());
+}
+
 async fn init_bookmarks_tab_test(
     cx: &mut TestAppContext,
     files: serde_json::Value,

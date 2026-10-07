@@ -679,6 +679,7 @@ struct MacWindowState {
     close_callback: Option<Box<dyn FnOnce()>>,
     appearance_changed_callback: Option<Box<dyn FnMut()>>,
     input_handler: Option<PlatformInputHandler>,
+    suppressed_system_hotkeys: Vec<Keystroke>,
     last_key_equivalent: Option<KeyDownEvent>,
     last_left_mouse_down_event: Option<Retained<Objc2Object>>,
     synthetic_drag_counter: usize,
@@ -1116,6 +1117,7 @@ impl MacWindow {
                 close_callback: None,
                 appearance_changed_callback: None,
                 input_handler: None,
+                suppressed_system_hotkeys: Vec::new(),
                 last_key_equivalent: None,
                 last_left_mouse_down_event: None,
                 synthetic_drag_counter: 0,
@@ -1375,6 +1377,7 @@ impl MacWindow {
 impl Drop for MacWindow {
     fn drop(&mut self) {
         let mut this = self.0.lock();
+        crate::symbolic_hotkeys::set_window_hotkeys(this.handle.window_id(), None);
         // `accesskit_macos::SubclassingAdapter::for_window` strong-retains the
         // window's content view, and that content view keeps the `GPUIView` it
         // hosts alive. Together with the `Arc<Mutex<MacWindowState>>` parked in
@@ -1815,6 +1818,14 @@ impl PlatformWindow for MacWindow {
                 }
             })
             .detach();
+    }
+
+    fn set_system_hotkeys_to_suppress(&self, keystrokes: &[Keystroke]) {
+        let mut state = self.0.lock();
+        state.suppressed_system_hotkeys = keystrokes.to_vec();
+        if unsafe { state.native_window.isKeyWindow() == YES } {
+            crate::symbolic_hotkeys::set_window_hotkeys(state.handle.window_id(), Some(keystrokes));
+        }
     }
 
     fn is_active(&self) -> bool {
@@ -3142,6 +3153,10 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
         return;
     }
 
+    crate::symbolic_hotkeys::set_window_hotkeys(
+        lock.handle.window_id(),
+        is_active.then_some(lock.suppressed_system_hotkeys.as_slice()),
+    );
     let executor = lock.foreground_executor.clone();
     drop(lock);
 

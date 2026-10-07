@@ -632,6 +632,7 @@
       // cmd-shift-N first so the menu bar advertises ⌘⇧N (and macOS can claim
       // those equivalents from system shortcuts like screenshot). cmd-! etc.
       // still match the keystroke GPUI reports after shift is applied.
+      "cmd-shift-0": "editor::ToggleNumberedBookmark0",
       "cmd-shift-1": "editor::ToggleNumberedBookmark1",
       "cmd-shift-2": "editor::ToggleNumberedBookmark2",
       "cmd-shift-3": "editor::ToggleNumberedBookmark3",
@@ -641,6 +642,7 @@
       "cmd-shift-7": "editor::ToggleNumberedBookmark7",
       "cmd-shift-8": "editor::ToggleNumberedBookmark8",
       "cmd-shift-9": "editor::ToggleNumberedBookmark9",
+      "cmd-)": "editor::ToggleNumberedBookmark0",
       "cmd-!": "editor::ToggleNumberedBookmark1",
       "cmd-@": "editor::ToggleNumberedBookmark2",
       "cmd-#": "editor::ToggleNumberedBookmark3",
@@ -650,6 +652,7 @@
       "cmd-&": "editor::ToggleNumberedBookmark7",
       "cmd-*": "editor::ToggleNumberedBookmark8",
       "cmd-(": "editor::ToggleNumberedBookmark9",
+      "cmd-0": "editor::JumpToNumberedBookmark0",
       "cmd-1": "editor::JumpToNumberedBookmark1",
       "cmd-2": "editor::JumpToNumberedBookmark2",
       "cmd-3": "editor::JumpToNumberedBookmark3",

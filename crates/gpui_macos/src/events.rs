@@ -509,6 +509,10 @@ const CMD_MOD: u32 = 1;
 const SHIFT_MOD: u32 = 2;
 const OPTION_MOD: u32 = 8;
 
+pub(crate) fn command_key_for_key_code(code: CGKeyCode) -> String {
+    chars_for_modified_key(code, CMD_MOD)
+}
+
 fn chars_for_modified_key(code: CGKeyCode, modifiers: u32) -> String {
     // Values from: https://github.com/phracker/MacOSX-SDKs/blob/master/MacOSX10.6.sdk/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/HIToolbox.framework/Versions/A/Headers/Events.h#L126
     // shifted >> 8 for UCKeyTranslate

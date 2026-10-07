@@ -1226,6 +1226,7 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn is_subpixel_rendering_supported(&self) -> bool;
 
     // macOS specific methods
+    fn set_system_hotkeys_to_suppress(&self, _keystrokes: &[crate::Keystroke]) {}
     fn get_title(&self) -> String {
         String::new()
     }

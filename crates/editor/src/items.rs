@@ -895,7 +895,8 @@ impl Item for Editor {
         self.report_editor_event(ReportEditorEvent::Closed, None, cx);
     }
 
-    fn deactivated(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+    fn deactivated(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        window.set_system_hotkeys_to_suppress(&[]);
         let selection = self.selections.newest_anchor();
         self.push_to_nav_history(selection.head(), None, true, false, cx);
     }
@@ -1129,13 +1130,18 @@ impl Item for Editor {
     ) {
         self.workspace = Some((workspace.weak_handle(), workspace.database_id()));
         if let Some(workspace_entity) = &workspace.weak_handle().upgrade() {
-            cx.subscribe(
+            cx.subscribe_in(
                 workspace_entity,
-                |editor, _, event: &workspace::Event, cx| {
-                    if let workspace::Event::ModalOpened = event {
+                window,
+                |editor, _, event: &workspace::Event, window, cx| match event {
+                    workspace::Event::ModalOpened => {
                         editor.mouse_context_menu.take();
                         editor.hide_blame_popover(true, cx);
                     }
+                    workspace::Event::ActiveItemChanged => {
+                        editor.refresh_numbered_bookmark_hotkeys(window, cx);
+                    }
+                    _ => {}
                 },
             )
             .detach();

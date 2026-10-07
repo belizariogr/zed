@@ -863,6 +863,16 @@ impl VisualTestContext {
         self.cx.dispatch_action(self.window, action)
     }
 
+    /// Returns the system shortcuts reserved by this test window.
+    pub fn suppressed_system_hotkeys(&self) -> Vec<crate::Keystroke> {
+        self.cx
+            .test_window(self.window)
+            .0
+            .lock()
+            .suppressed_system_hotkeys
+            .clone()
+    }
+
     /// Read the title off the window (set by `Window#set_window_title`)
     pub fn window_title(&mut self) -> Option<String> {
         self.cx.test_window(self.window).0.lock().title.clone()

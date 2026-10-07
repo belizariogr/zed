@@ -2278,10 +2278,12 @@ impl Editor {
                     _ => {}
                 },
             ));
-            project_subscriptions.push(cx.observe(
+            project_subscriptions.push(cx.observe_in(
                 &project.read(cx).bookmark_store(),
-                |editor, _, cx| {
+                window,
+                |editor, _, window, cx| {
                     editor.refresh_numbered_bookmark_highlights(cx);
+                    editor.refresh_numbered_bookmark_hotkeys(window, cx);
                     cx.notify();
                 },
             ));
@@ -11030,6 +11032,7 @@ impl Editor {
     }
 
     fn handle_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_numbered_bookmark_hotkeys(window, cx);
         self.cursor_animations.clear();
         cx.emit(EditorEvent::Focused);
 

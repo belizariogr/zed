@@ -5,7 +5,7 @@ use std::sync::Arc;
 use collections::HashMap;
 use gpui::{
     App, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla,
-    MouseButton, Rgba, TaskExt, Window, div, px,
+    Keystroke, Modifiers, MouseButton, Rgba, TaskExt, Window, div, px,
 };
 use multi_buffer::ToPoint as _;
 use project::bookmark_store::SerializedNumberedBookmark;
@@ -89,6 +89,61 @@ impl ModalView for NumberedBookmarkList {
 }
 
 impl Editor {
+    pub(crate) fn numbered_bookmark_hotkeys(&self, cx: &mut App) -> Vec<Keystroke> {
+        let Some(store) = self.bookmark_store.as_ref() else {
+            return Vec::new();
+        };
+        let buffers = self.buffer.read(cx).all_buffers();
+        store.update(cx, |store, cx| {
+            (0..=9)
+                .filter(|number| {
+                    buffers.iter().any(|buffer| {
+                        store
+                            .numbered_bookmark_in_buffer(buffer, *number, cx)
+                            .is_some()
+                    })
+                })
+                .map(|number| Keystroke {
+                    modifiers: Modifiers {
+                        platform: true,
+                        ..Modifiers::none()
+                    },
+                    key: number.to_string(),
+                    key_char: None,
+                })
+                .collect()
+        })
+    }
+
+    pub(crate) fn refresh_numbered_bookmark_hotkeys(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !cfg!(target_os = "macos") || self.bookmark_store.is_none() {
+            return;
+        }
+        if let Some(workspace) = self.workspace() {
+            let active_editor = workspace.read(cx).active_item(cx).and_then(|item| {
+                if item.item_id() == cx.entity_id() {
+                    Some(cx.entity_id())
+                } else {
+                    item.act_as::<Editor>(cx).map(|editor| editor.entity_id())
+                }
+            });
+            if active_editor.is_none() {
+                window.set_system_hotkeys_to_suppress(&[]);
+                return;
+            }
+            if active_editor != Some(cx.entity_id()) {
+                return;
+            }
+        } else if !self.is_focused(window) {
+            return;
+        }
+        window.set_system_hotkeys_to_suppress(&self.numbered_bookmark_hotkeys(cx));
+    }
+
     pub fn toggle_numbered_bookmark_0(
         &mut self,
         _: &ToggleNumberedBookmark0,

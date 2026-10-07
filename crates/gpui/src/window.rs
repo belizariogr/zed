@@ -2851,6 +2851,13 @@ impl Window {
         self.platform_window.hide_soft_keyboard();
     }
 
+    /// Updates the shortcuts reserved by this window while the application is active.
+    /// Currently supported on macOS for Command-digit system shortcuts.
+    pub fn set_system_hotkeys_to_suppress(&self, keystrokes: &[Keystroke]) {
+        self.platform_window
+            .set_system_hotkeys_to_suppress(keystrokes);
+    }
+
     /// Returns whether this window is focused by the operating system (receiving key events).
     pub fn is_window_active(&self) -> bool {
         self.active.get()
