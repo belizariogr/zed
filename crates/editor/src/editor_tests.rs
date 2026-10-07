@@ -37510,6 +37510,71 @@ async fn test_active_bookmarks(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_jump_to_numbered_bookmark_from_multibuffer_excerpt(cx: &mut TestAppContext) {
+    let mut ctx =
+        BookmarkTestContext::new("Line 0\nLine 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6", cx)
+            .await;
+
+    ctx.editor.update_in(&mut ctx.cx, |editor, window, cx| {
+        editor.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
+            selections.select_ranges([Point::new(4, 0)..Point::new(4, 0)]);
+        });
+        editor.toggle_numbered_bookmark_4(&crate::ToggleNumberedBookmark4, window, cx);
+    });
+
+    let diff_editor = ctx.cx.update(|window, cx| {
+        let buffer = ctx
+            .editor
+            .read(cx)
+            .buffer()
+            .read(cx)
+            .all_buffers_iter()
+            .next()
+            .expect("editor should have a buffer");
+        let multibuffer = cx.new(|cx| {
+            let mut multibuffer = MultiBuffer::without_headers(buffer.read(cx).capability());
+            multibuffer.set_excerpts_for_buffer(
+                buffer.clone(),
+                [Point::new(2, 0)..Point::new(6, 0)],
+                0,
+                cx,
+            );
+            multibuffer
+        });
+        cx.new(|cx| {
+            Editor::new(
+                EditorMode::full(),
+                multibuffer,
+                Some(ctx.project.clone()),
+                window,
+                cx,
+            )
+        })
+    });
+
+    let initial_row = diff_editor.update(&mut ctx.cx, |editor, cx| {
+        editor
+            .selections
+            .newest::<Point>(&editor.display_snapshot(cx))
+            .head()
+            .row
+    });
+    diff_editor.update_in(&mut ctx.cx, |editor, window, cx| {
+        editor.jump_to_numbered_bookmark_4(&crate::JumpToNumberedBookmark4, window, cx);
+    });
+    let jumped_row = diff_editor.update(&mut ctx.cx, |editor, cx| {
+        editor
+            .selections
+            .newest::<Point>(&editor.display_snapshot(cx))
+            .head()
+            .row
+    });
+
+    assert_eq!(initial_row, 0);
+    assert_eq!(jumped_row, 2);
+}
+
+#[gpui::test]
 async fn test_clearing_bookmark_store_notifies_editor(cx: &mut TestAppContext) {
     let mut ctx = BookmarkTestContext::new("Line 0\nLine 1\nLine 2\nLine 3", cx).await;
 

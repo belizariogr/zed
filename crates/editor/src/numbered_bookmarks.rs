@@ -89,6 +89,17 @@ impl ModalView for NumberedBookmarkList {
 }
 
 impl Editor {
+    fn numbered_bookmark_buffer_for_path(
+        &self,
+        path: &Path,
+        cx: &App,
+    ) -> Option<Entity<language::Buffer>> {
+        self.buffer.read(cx).all_buffers_iter().find(|buffer| {
+            project::bookmark_store::BookmarkStore::abs_path_from_buffer(buffer, cx)
+                .is_some_and(|buffer_path| buffer_path.as_ref() == path)
+        })
+    }
+
     pub(crate) fn numbered_bookmark_hotkeys(&self, cx: &mut App) -> Vec<Keystroke> {
         let Some(store) = self.bookmark_store.as_ref() else {
             return Vec::new();
@@ -469,22 +480,36 @@ impl Editor {
         let Some(bookmark_store) = self.bookmark_store.clone() else {
             return;
         };
-        let Some(current_path) = self.buffer.read(cx).as_singleton().and_then(|buffer| {
-            project::bookmark_store::BookmarkStore::abs_path_from_buffer(&buffer, cx)
-        }) else {
+        let Some(project) = self.project() else {
             self.warn_numbered_bookmark_not_defined(number, cx);
             return;
         };
 
+        let snapshot = self.snapshot(window, cx);
+        let current_point = self
+            .selections
+            .newest::<Point>(&snapshot.display_snapshot)
+            .head();
+        let buffer_snapshot = self.buffer.read(cx).snapshot(cx);
+        let anchor = buffer_snapshot.anchor_before(current_point);
+        let current_buffer = buffer_snapshot
+            .anchor_to_buffer_anchor(anchor)
+            .and_then(|(anchor, _)| project.read(cx).buffer_for_id(anchor.buffer_id, cx));
+        let Some(current_buffer) = current_buffer else {
+            self.warn_numbered_bookmark_not_defined(number, cx);
+            return;
+        };
+        let Some(current_path) =
+            project::bookmark_store::BookmarkStore::abs_path_from_buffer(&current_buffer, cx)
+        else {
+            self.warn_numbered_bookmark_not_defined(number, cx);
+            return;
+        };
+        let current_row = current_point.row;
+
         let navigate = EditorSettings::get_global(cx)
             .numbered_bookmarks
             .navigate_through_all_files;
-        let snapshot = self.snapshot(window, cx);
-        let current_row = self
-            .selections
-            .newest::<Point>(&snapshot.display_snapshot)
-            .head()
-            .row;
 
         let locations = bookmark_store.read(cx).numbered_bookmark_locations(cx);
         let current_file_location = locations.iter().find(|(path, bookmark)| {
@@ -494,7 +519,12 @@ impl Editor {
         match navigate {
             NumberedBookmarkNavigateThroughAllFiles::Disabled => {
                 if let Some((_, bookmark)) = current_file_location {
-                    self.reveal_numbered_bookmark_in_current_file(bookmark, window, cx);
+                    self.reveal_numbered_bookmark_in_current_file(
+                        &current_buffer,
+                        bookmark,
+                        window,
+                        cx,
+                    );
                 } else if bookmark_store.read(cx).has_numbered_bookmarks() {
                     self.warn_numbered_bookmark_not_defined(number, cx);
                 } else {
@@ -503,7 +533,12 @@ impl Editor {
             }
             NumberedBookmarkNavigateThroughAllFiles::Replace => {
                 if let Some((_, bookmark)) = current_file_location {
-                    self.reveal_numbered_bookmark_in_current_file(bookmark, window, cx);
+                    self.reveal_numbered_bookmark_in_current_file(
+                        &current_buffer,
+                        bookmark,
+                        window,
+                        cx,
+                    );
                 } else if let Some((path, bookmark)) = locations
                     .iter()
                     .find(|(path, bookmark)| {
@@ -526,7 +561,12 @@ impl Editor {
                 if let Some((_, bookmark)) = current_file_location
                     && bookmark.row != current_row
                 {
-                    self.reveal_numbered_bookmark_in_current_file(bookmark, window, cx);
+                    self.reveal_numbered_bookmark_in_current_file(
+                        &current_buffer,
+                        bookmark,
+                        window,
+                        cx,
+                    );
                     return;
                 }
 
@@ -568,15 +608,21 @@ impl Editor {
 
     fn reveal_numbered_bookmark_in_current_file(
         &mut self,
+        buffer: &Entity<language::Buffer>,
         bookmark: &SerializedNumberedBookmark,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let snapshot = self.snapshot(window, cx);
         let multi_buffer_snapshot = snapshot.buffer_snapshot();
+        let buffer_snapshot = buffer.read(cx).text_snapshot();
         let point =
-            multi_buffer_snapshot.clip_point(Point::new(bookmark.row, bookmark.column), Bias::Left);
-        let anchor = multi_buffer_snapshot.anchor_before(point);
+            buffer_snapshot.clip_point(Point::new(bookmark.row, bookmark.column), Bias::Left);
+        let Some(anchor) =
+            multi_buffer_snapshot.anchor_in_excerpt(buffer_snapshot.anchor_before(point))
+        else {
+            return;
+        };
         self.unfold_ranges(&[anchor..anchor], true, false, cx);
         self.change_selections(
             SelectionEffects::scroll(numbered_bookmark_autoscroll(cx)),
@@ -1029,7 +1075,11 @@ impl NumberedBookmarkList {
         };
         if item.in_active_file {
             self.active_editor.update(cx, |editor, cx| {
+                let Some(buffer) = editor.numbered_bookmark_buffer_for_path(&item.path, cx) else {
+                    return;
+                };
                 editor.reveal_numbered_bookmark_in_current_file(
+                    &buffer,
                     &SerializedNumberedBookmark {
                         number: item.number,
                         row: item.row,
@@ -1076,7 +1126,11 @@ impl NumberedBookmarkList {
         self.confirmed = true;
         self.active_editor.update(cx, |editor, cx| {
             if item.in_active_file {
+                let Some(buffer) = editor.numbered_bookmark_buffer_for_path(&item.path, cx) else {
+                    return;
+                };
                 editor.reveal_numbered_bookmark_in_current_file(
+                    &buffer,
                     &SerializedNumberedBookmark {
                         number: item.number,
                         row: item.row,
