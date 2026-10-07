@@ -15,6 +15,7 @@ Customizations implemented in this fork:
 
 ### Debugger
 
+- **Clear Console** — clear debugger output from its context menu or command palette while retaining the session, watches, and expression history
 - **Bun debugger** — Bun DAP adapter/inspector, Bun debug locator, and bringing session windows forward on breakpoints
 - **Watches without an active session** — add-watch controls always enabled; Variables visible before starting debug; watches retained in the project's DAP store across sessions and evaluated when a stack frame becomes available
 - **Watch expression UI** — inline add-watch input in Variables; watches kept when evaluation fails or returns `undefined`
@@ -32,6 +33,10 @@ Customizations implemented in this fork:
 ### Project Panel
 
 - **Root state and collapse-all** — `is_root` handling with root-specific padding/collapse-all behavior; show the collapse-all button only while hovering the project row
+
+### Git Panel
+
+- **File diff preview tabs** — single-click changed files to preview their full-file diff, replacing the previous preview; double-click or edit to keep the tab open
 
 ### Installation
 

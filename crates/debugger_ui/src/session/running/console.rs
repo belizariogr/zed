@@ -33,7 +33,9 @@ actions!(
     console,
     [
         /// Adds an expression to the watch list.
-        WatchExpression
+        WatchExpression,
+        /// Clears the debugger console output.
+        ClearConsole
     ]
 );
 
@@ -46,6 +48,8 @@ pub struct Console {
     stack_frame_list: Entity<StackFrameList>,
     last_token: OutputToken,
     update_output_task: Option<Task<()>>,
+    ansi_highlight_offsets: Vec<usize>,
+    output_generation: usize,
     focus_handle: FocusHandle,
     history: SearchHistory,
     cursor: SearchHistoryCursor,
@@ -85,6 +89,14 @@ impl Console {
             editor.set_use_modal_editing(false);
             editor.disable_mouse_wheel_zoom();
             editor.set_soft_wrap_mode(language::language_settings::SoftWrap::EditorWidth, cx);
+            editor.set_custom_context_menu(|editor, _, window, cx| {
+                Some(ContextMenu::build(window, cx, |menu, _, cx| {
+                    menu.context(editor.focus_handle(cx))
+                        .action("Copy", editor::actions::Copy.boxed_clone())
+                        .separator()
+                        .action("Clear Console", ClearConsole.boxed_clone())
+                }))
+            });
             editor
         });
         let focus_handle = cx.focus_handle();
@@ -119,6 +131,8 @@ impl Console {
             _subscriptions,
             stack_frame_list,
             update_output_task: None,
+            ansi_highlight_offsets: Vec::new(),
+            output_generation: 0,
             last_token: OutputToken(0),
             focus_handle,
             history: SearchHistory::new(
@@ -154,54 +168,82 @@ impl Console {
         self.session.read(cx).has_new_output(self.last_token)
     }
 
+    pub(crate) fn clear_console(
+        &mut self,
+        _: &ClearConsole,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.update_output_task.take();
+        self.output_generation = self.output_generation.wrapping_add(1);
+        self.last_token = self.session.read(cx).output(self.last_token).1;
+        self.console.update(cx, |editor, cx| {
+            for offset in self.ansi_highlight_offsets.drain(..) {
+                let key = HighlightKey::ConsoleAnsiHighlight(offset);
+                editor.clear_highlights(key, cx);
+                editor.clear_background_highlights(key, cx);
+            }
+            editor.set_read_only(false);
+            editor.clear(window, cx);
+            editor.set_read_only(true);
+        });
+        cx.notify();
+    }
+
     fn add_messages(
         &mut self,
         events: Vec<OutputEvent>,
         window: &mut Window,
-        cx: &mut App,
+        cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        self.console.update(cx, |_, cx| {
-            cx.spawn_in(window, async move |console, cx| {
-                let mut len = console
-                    .update(cx, |this, cx| this.buffer().read(cx).len(cx))?
-                    .0;
-                let (output, spans, background_spans) = cx
-                    .background_spawn(async move {
-                        let mut all_spans = Vec::new();
-                        let mut all_background_spans = Vec::new();
-                        let mut to_insert = String::new();
-                        let mut scratch = String::new();
+        let console = self.console.downgrade();
+        let output_generation = self.output_generation;
+        cx.spawn_in(window, async move |this, cx| {
+            let mut len = console
+                .update(cx, |this, cx| this.buffer().read(cx).len(cx))?
+                .0;
+            let (output, spans, background_spans) = cx
+                .background_spawn(async move {
+                    let mut all_spans = Vec::new();
+                    let mut all_background_spans = Vec::new();
+                    let mut to_insert = String::new();
+                    let mut scratch = String::new();
 
-                        for event in &events {
-                            scratch.clear();
-                            let trimmed_output = event.output.trim_end();
-                            scratch.push_str(trimmed_output);
-                            scratch.push('\n');
-                            let parsed_output = terminal::parse_ansi_text(scratch.as_bytes());
-                            let output = parsed_output.text;
-                            to_insert.extend(output.chars());
-                            let mut spans = parsed_output.foreground_spans;
-                            let mut background_spans = parsed_output.background_spans;
+                    for event in &events {
+                        scratch.clear();
+                        let trimmed_output = event.output.trim_end();
+                        scratch.push_str(trimmed_output);
+                        scratch.push('\n');
+                        let parsed_output = terminal::parse_ansi_text(scratch.as_bytes());
+                        let output = parsed_output.text;
+                        to_insert.extend(output.chars());
+                        let mut spans = parsed_output.foreground_spans;
+                        let mut background_spans = parsed_output.background_spans;
 
-                            for (range, _) in spans.iter_mut() {
-                                let start_offset = len + range.start;
-                                *range = start_offset..len + range.end;
-                            }
-
-                            for (range, _) in background_spans.iter_mut() {
-                                let start_offset = len + range.start;
-                                *range = start_offset..len + range.end;
-                            }
-
-                            len += output.len();
-
-                            all_spans.extend(spans);
-                            all_background_spans.extend(background_spans);
+                        for (range, _) in spans.iter_mut() {
+                            let start_offset = len + range.start;
+                            *range = start_offset..len + range.end;
                         }
-                        (to_insert, all_spans, all_background_spans)
-                    })
-                    .await;
-                console.update_in(cx, |console, window, cx| {
+
+                        for (range, _) in background_spans.iter_mut() {
+                            let start_offset = len + range.start;
+                            *range = start_offset..len + range.end;
+                        }
+
+                        len += output.len();
+
+                        all_spans.extend(spans);
+                        all_background_spans.extend(background_spans);
+                    }
+                    (to_insert, all_spans, all_background_spans)
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                // A batch may already be queued when its parent task is cancelled.
+                if this.output_generation != output_generation {
+                    return;
+                }
+                this.console.update(cx, |console, cx| {
                     console.set_read_only(false);
                     console.move_to_end(&editor::actions::MoveToEnd, window, cx);
                     console.insert(&output, window, cx);
@@ -212,6 +254,7 @@ impl Console {
                     for (range, color) in spans {
                         let Some(color) = color else { continue };
                         let start_offset = range.start;
+                        this.ansi_highlight_offsets.push(start_offset);
                         let range = buffer.anchor_after(MultiBufferOffset(range.start))
                             ..buffer.anchor_before(MultiBufferOffset(range.end));
                         let style = HighlightStyle {
@@ -233,6 +276,7 @@ impl Console {
                     for (range, color) in background_spans {
                         let Some(color) = color else { continue };
                         let start_offset = range.start;
+                        this.ansi_highlight_offsets.push(start_offset);
                         let range = buffer.anchor_after(MultiBufferOffset(range.start))
                             ..buffer.anchor_before(MultiBufferOffset(range.end));
                         let color_fn = background_color_fetcher(color);
@@ -245,10 +289,10 @@ impl Console {
                     }
 
                     cx.notify();
-                })?;
+                });
+            })?;
 
-                Ok(())
-            })
+            Ok(())
         })
     }
 
@@ -454,6 +498,7 @@ impl Render for Console {
             .key_context("DebugConsole")
             .on_action(cx.listener(Self::evaluate))
             .on_action(cx.listener(Self::watch_expression))
+            .on_action(cx.listener(Self::clear_console))
             .size_full()
             .border_2()
             .bg(cx.theme().colors().editor_background)
@@ -799,10 +844,172 @@ fn background_color_fetcher(color: terminal::Color) -> impl Fn(&Theme) -> Hsla {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::init_test;
+    use crate::tests::{
+        active_debug_session_panel, init_test, init_test_workspace, start_debug_session,
+    };
     use editor::{MultiBufferOffset, test::editor_test_context::EditorTestContext};
-    use gpui::TestAppContext;
+    use gpui::{TestAppContext, VisualTestContext};
     use language::Point;
+    use project::{FakeFs, Project};
+    use serde_json::json;
+    use util::path;
+
+    async fn setup_console(
+        cx: &mut TestAppContext,
+    ) -> (Entity<Session>, Entity<Console>, VisualTestContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.background_executor.clone());
+        fs.insert_tree(path!("/project"), json!({ "main.rs": "fn main() {}" }))
+            .await;
+        let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+        let workspace = init_test_workspace(&project, cx).await;
+        let mut cx = VisualTestContext::from_window(*workspace, cx);
+        let session =
+            start_debug_session(&workspace, &mut cx, |_| {}).expect("debug session should start");
+        cx.run_until_parked();
+        let panel = active_debug_session_panel(workspace, &mut cx);
+        let console = panel.read_with(&cx, |panel, cx| {
+            panel.running_state().read(cx).console().clone()
+        });
+        (session, console, cx)
+    }
+
+    fn output_event(output: &str) -> OutputEvent {
+        OutputEvent {
+            category: Some(dap::OutputEventCategory::Console),
+            output: output.to_owned(),
+            data: None,
+            variables_reference: None,
+            source: None,
+            line: None,
+            column: None,
+            group: None,
+            location_reference: None,
+        }
+    }
+
+    #[gpui::test]
+    async fn test_clear_console_preserves_session_and_queries(cx: &mut TestAppContext) {
+        let (session, console, mut cx) = setup_console(cx).await;
+        let client = session.read_with(&cx, |session, _| {
+            session.adapter_client().expect("adapter should be running")
+        });
+        session.update(&mut cx, |session, cx| {
+            session.add_pending_watcher("watched_value".into(), cx);
+        });
+        console.update_in(&mut cx, |console, window, cx| {
+            console.clear_console(&ClearConsole, window, cx);
+            console
+                .history
+                .add(&mut console.cursor, "previous expression".into());
+            console.cursor.reset();
+            console.query_bar.update(cx, |editor, cx| {
+                editor.set_text("pending expression", window, cx);
+            });
+        });
+        client
+            .fake_event(dap::messages::Events::Output(output_event(
+                "plain output\n\x1b[41m\x1b[37mcolored output\x1b[0m",
+            )))
+            .await;
+        cx.run_until_parked();
+        console.update_in(&mut cx, |console, window, cx| {
+            console.update_output(window, cx);
+        });
+        cx.run_until_parked();
+        console.update_in(&mut cx, |console, window, cx| {
+            assert_eq!(
+                console.console.read(cx).text(cx),
+                "plain output\ncolored output\n"
+            );
+            assert!(!console.ansi_highlight_offsets.is_empty());
+            console.clear_console(&ClearConsole, window, cx);
+            assert!(console.console.read(cx).text(cx).is_empty());
+            assert!(console.console.read(cx).read_only(cx));
+            assert!(console.ansi_highlight_offsets.is_empty());
+            assert!(!console.show_indicator(cx));
+            assert_eq!(console.query_bar.read(cx).text(cx), "pending expression");
+            console.console.update(cx, |editor, cx| {
+                assert!(editor.all_text_highlights(window, cx).is_empty());
+                assert!(editor.all_text_background_highlights(window, cx).is_empty());
+            });
+            console.previous_query(&SelectPrevious, window, cx);
+            assert_eq!(console.query_bar.read(cx).text(cx), "previous expression");
+            assert!(!console.session.read(cx).is_terminated());
+            assert!(
+                console
+                    .session
+                    .read(cx)
+                    .watchers()
+                    .contains_key("watched_value")
+            );
+            console.update_output(window, cx);
+        });
+        cx.run_until_parked();
+        client
+            .fake_event(dap::messages::Events::Output(output_event("new output")))
+            .await;
+        cx.run_until_parked();
+        console.update_in(&mut cx, |console, window, cx| {
+            console.update_output(window, cx);
+        });
+        cx.run_until_parked();
+        console.read_with(&cx, |console, cx| {
+            assert_eq!(console.console.read(cx).text(cx), "new output\n");
+        });
+        session
+            .update(&mut cx, |session, cx| session.shutdown(cx))
+            .await;
+        console.update_in(&mut cx, |console, window, cx| {
+            console.clear_console(&ClearConsole, window, cx);
+            assert!(console.console.read(cx).text(cx).is_empty());
+        });
+    }
+
+    #[gpui::test(iterations = 20)]
+    async fn test_clear_console_cancels_pending_output(cx: &mut TestAppContext) {
+        let (session, console, mut cx) = setup_console(cx).await;
+        let client = session.read_with(&cx, |session, _| {
+            session.adapter_client().expect("adapter should be running")
+        });
+        client
+            .fake_event(dap::messages::Events::Output(output_event(
+                "pending output",
+            )))
+            .await;
+        cx.run_until_parked();
+        let stale_batch = console.update_in(&mut cx, |console, window, cx| {
+            console.update_output(window, cx);
+            let stale_batch = console.add_messages(
+                vec![output_event("\x1b[41m\x1b[37mstale batch\x1b[0m")],
+                window,
+                cx,
+            );
+            console.clear_console(&ClearConsole, window, cx);
+            console.update_output(window, cx);
+            stale_batch
+        });
+        stale_batch
+            .await
+            .expect("stale batch should finish without inserting");
+        cx.run_until_parked();
+        console.read_with(&cx, |console, cx| {
+            assert!(console.console.read(cx).text(cx).is_empty());
+            assert!(console.ansi_highlight_offsets.is_empty());
+            assert!(!console.show_indicator(cx));
+        });
+        client
+            .fake_event(dap::messages::Events::Output(output_event("after clear")))
+            .await;
+        cx.run_until_parked();
+        console.update_in(&mut cx, |console, window, cx| {
+            console.update_output(window, cx)
+        });
+        cx.run_until_parked();
+        console.read_with(&cx, |console, cx| {
+            assert_eq!(console.console.read(cx).text(cx), "after clear\n");
+        });
+    }
 
     #[track_caller]
     fn assert_completion_range(

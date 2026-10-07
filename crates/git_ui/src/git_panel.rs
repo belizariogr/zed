@@ -100,7 +100,7 @@ use workspace::SERIALIZATION_THROTTLE_TIME;
 use workspace::{
     Item, ModalView, Workspace,
     dock::{DockPosition, Panel, PanelEvent},
-    notifications::{DetachAndPromptErr, NotificationId, NotifyTaskExt},
+    notifications::{DetachAndPromptErr, NotificationId, NotifyResultExt, NotifyTaskExt},
 };
 use zed_actions::{
     DecreaseBufferFontSize, IncreaseBufferFontSize, ResetBufferFontSize,
@@ -1168,6 +1168,7 @@ pub struct GitPanel {
     section_file_counts: HashMap<Section, usize>,
     update_visible_entries_task: Task<()>,
     reopen_commit_buffer_task: Task<()>,
+    open_file_diff_task: Option<Task<()>>,
     pub(crate) workspace: WeakEntity<Workspace>,
     context_menu: Option<GitPanelContextMenu>,
     modal_open: bool,
@@ -1506,6 +1507,7 @@ impl GitPanel {
                 section_file_counts: HashMap::default(),
                 update_visible_entries_task: Task::ready(()),
                 reopen_commit_buffer_task: Task::ready(()),
+                open_file_diff_task: None,
                 show_placeholders: false,
                 local_committer: None,
                 local_committer_task: None,
@@ -2747,13 +2749,14 @@ impl GitPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_file_diff_task.take();
         let entry_primary_click_action =
             GitPanelSettings::get_global(cx).entry_primary_click_action;
         let action = match (entry_primary_click_action, secondary) {
             (GitPanelClickBehavior::ProjectDiff, false) => GitPanelClickBehavior::ProjectDiff,
             (GitPanelClickBehavior::ProjectDiff, true) => GitPanelClickBehavior::FileDiff,
             (GitPanelClickBehavior::FileDiff, false) => GitPanelClickBehavior::FileDiff,
-            (GitPanelClickBehavior::FileDiff, true) => GitPanelClickBehavior::ProjectDiff,
+            (GitPanelClickBehavior::FileDiff, true) => GitPanelClickBehavior::FileDiff,
             (GitPanelClickBehavior::ViewFile, false) => GitPanelClickBehavior::ViewFile,
             (GitPanelClickBehavior::ViewFile, true) => GitPanelClickBehavior::ProjectDiff,
         };
@@ -2763,7 +2766,33 @@ impl GitPanel {
                 self.focus_handle.focus(window, cx);
             }
             GitPanelClickBehavior::FileDiff => {
-                self.open_solo_diff(&Default::default(), window, cx);
+                if entry_primary_click_action == GitPanelClickBehavior::FileDiff {
+                    let Some(entry) = self
+                        .selected_entry
+                        .and_then(|index| self.entries.get(index))
+                        .and_then(GitListEntry::status_entry)
+                        .cloned()
+                    else {
+                        return;
+                    };
+                    let Some(repository) = self.active_repository.clone() else {
+                        return;
+                    };
+                    let task = SoloDiffView::open_or_focus_with_preview(
+                        entry,
+                        repository,
+                        self.workspace.clone(),
+                        !secondary,
+                        window,
+                        cx,
+                    );
+                    let workspace = self.workspace.clone();
+                    self.open_file_diff_task = Some(cx.spawn_in(window, async move |_, cx| {
+                        task.await.notify_workspace_async_err(workspace, cx);
+                    }));
+                } else {
+                    self.open_solo_diff(&Default::default(), window, cx);
+                }
             }
             GitPanelClickBehavior::ViewFile => {
                 self.view_file(&Default::default(), window, cx);
@@ -10282,6 +10311,380 @@ mod tests {
         await_git_panel_entries(&panel, &mut cx).await;
 
         (fs, project, workspace, panel, cx)
+    }
+
+    fn click_changed_file(
+        panel: &Entity<GitPanel>,
+        path: &str,
+        double_click: bool,
+        cx: &mut VisualTestContext,
+    ) {
+        panel.update_in(cx, |panel, window, cx| {
+            let index = entry_index_for_repo_path(panel, &repo_path(path))
+                .expect("changed file should be present");
+            panel.clear_marks_and_select(index, cx);
+            panel.open_selected_entry_on_click(double_click, window, cx);
+        });
+    }
+
+    fn active_solo_diff(
+        workspace: &Entity<Workspace>,
+        cx: &VisualTestContext,
+    ) -> Entity<SoloDiffView> {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .active_item_as::<SoloDiffView>(cx)
+                .expect("single-file diff should be active")
+        })
+    }
+
+    #[gpui::test]
+    async fn test_file_diff_click_replaces_preview_and_double_click_keeps_tab(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let (_, _, workspace, panel, mut cx) = setup_git_panel_with_changes(
+            cx,
+            json!({ ".git": {}, "a.txt": "changed\nunchanged\n", "b.txt": "b\n" }),
+            &[
+                ("a.txt", StatusCode::Modified),
+                ("b.txt", StatusCode::Modified),
+            ],
+        )
+        .await;
+        click_changed_file(&panel, "a.txt", false, &mut cx);
+        cx.run_until_parked();
+        let first = active_solo_diff(&workspace, &cx);
+        workspace.read_with(&cx, |workspace, cx| {
+            assert_eq!(
+                workspace.active_pane().read(cx).preview_item_id(),
+                Some(first.entity_id())
+            );
+            assert!(!first.read(cx).is_dirty(cx));
+            let editor = first
+                .boxed_clone()
+                .act_as::<Editor>(cx)
+                .expect("diff should expose its editor");
+            assert_eq!(editor.read(cx).text(cx), "changed\nunchanged\n");
+        });
+        click_changed_file(&panel, "b.txt", false, &mut cx);
+        cx.run_until_parked();
+        let second = active_solo_diff(&workspace, &cx);
+        workspace.read_with(&cx, |workspace, cx| {
+            assert_eq!(workspace.items_of_type::<SoloDiffView>(cx).count(), 1);
+            assert_eq!(
+                workspace.active_pane().read(cx).preview_item_id(),
+                Some(second.entity_id())
+            );
+        });
+        click_changed_file(&panel, "b.txt", true, &mut cx);
+        cx.run_until_parked();
+        assert_eq!(active_solo_diff(&workspace, &cx), second);
+        workspace.read_with(&cx, |workspace, cx| {
+            assert!(workspace.active_pane().read(cx).preview_item_id().is_none());
+        });
+        click_changed_file(&panel, "a.txt", false, &mut cx);
+        cx.run_until_parked();
+        let preview = active_solo_diff(&workspace, &cx);
+        click_changed_file(&panel, "b.txt", false, &mut cx);
+        cx.run_until_parked();
+        workspace.read_with(&cx, |workspace, cx| {
+            assert_eq!(workspace.items_of_type::<SoloDiffView>(cx).count(), 2);
+            assert_eq!(
+                workspace.active_pane().read(cx).preview_item_id(),
+                Some(preview.entity_id())
+            );
+            assert_eq!(workspace.active_item_as::<SoloDiffView>(cx), Some(second));
+            assert!(workspace.items_of_type::<ProjectDiff>(cx).next().is_none());
+        });
+    }
+
+    #[gpui::test(iterations = 20)]
+    async fn test_file_diff_rapid_clicks_keep_last_selection(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (_, _, workspace, panel, mut cx) = setup_git_panel_with_changes(
+            cx,
+            json!({ ".git": {}, "a.txt": "a", "b.txt": "b" }),
+            &[
+                ("a.txt", StatusCode::Modified),
+                ("b.txt", StatusCode::Modified),
+            ],
+        )
+        .await;
+        click_changed_file(&panel, "a.txt", false, &mut cx);
+        click_changed_file(&panel, "b.txt", false, &mut cx);
+        click_changed_file(&panel, "a.txt", false, &mut cx);
+        click_changed_file(&panel, "a.txt", true, &mut cx);
+        cx.run_until_parked();
+        workspace.read_with(&cx, |workspace, cx| {
+            let diff = workspace
+                .active_item_as::<SoloDiffView>(cx)
+                .expect("diff should open");
+            assert_eq!(
+                diff.read(cx)
+                    .active_project_path(cx)
+                    .expect("diff should have a path")
+                    .path
+                    .as_ref(),
+                rel_path("a.txt")
+            );
+            assert_eq!(workspace.items_of_type::<SoloDiffView>(cx).count(), 1);
+            assert!(workspace.active_pane().read(cx).preview_item_id().is_none());
+        });
+        click_changed_file(&panel, "b.txt", false, &mut cx);
+        cx.run_until_parked();
+        click_changed_file(&panel, "a.txt", false, &mut cx);
+        click_changed_file(&panel, "b.txt", false, &mut cx);
+        cx.run_until_parked();
+        workspace.read_with(&cx, |workspace, cx| {
+            let diff = workspace
+                .active_item_as::<SoloDiffView>(cx)
+                .expect("diff should open");
+            assert_eq!(
+                diff.read(cx)
+                    .active_project_path(cx)
+                    .expect("diff should have a path")
+                    .path
+                    .as_ref(),
+                rel_path("b.txt")
+            );
+            assert_eq!(workspace.items_of_type::<SoloDiffView>(cx).count(), 2);
+            assert_eq!(
+                workspace.active_pane().read(cx).preview_item_id(),
+                Some(diff.entity_id())
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_file_diff_edits_keep_preview_tab(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (_, _, workspace, panel, mut cx) = setup_git_panel_with_changes(
+            cx,
+            json!({ ".git": {}, "a.txt": "a", "b.txt": "b" }),
+            &[
+                ("a.txt", StatusCode::Modified),
+                ("b.txt", StatusCode::Modified),
+            ],
+        )
+        .await;
+        click_changed_file(&panel, "a.txt", false, &mut cx);
+        cx.run_until_parked();
+        let first = active_solo_diff(&workspace, &cx);
+        let editor = first.read_with(&cx, |_, cx| {
+            first
+                .boxed_clone()
+                .act_as::<Editor>(cx)
+                .expect("diff should expose its editor")
+        });
+        editor.update_in(&mut cx, |editor, window, cx| {
+            editor.insert("edited", window, cx)
+        });
+        cx.run_until_parked();
+        workspace.read_with(&cx, |workspace, cx| {
+            assert!(first.read(cx).is_dirty(cx));
+            assert!(workspace.active_pane().read(cx).preview_item_id().is_none());
+        });
+        click_changed_file(&panel, "b.txt", false, &mut cx);
+        cx.run_until_parked();
+        let second = active_solo_diff(&workspace, &cx);
+        let path = second
+            .read_with(&cx, |diff, cx| diff.active_project_path(cx))
+            .expect("diff should have a project path");
+        let file = workspace
+            .update_in(&mut cx, |workspace, window, cx| {
+                workspace.open_path(path, None, true, window, cx)
+            })
+            .await
+            .expect("normal editor should open");
+        let editor = cx
+            .read(|cx| file.act_as::<Editor>(cx))
+            .expect("file should be an editor");
+        editor.update_in(&mut cx, |editor, window, cx| {
+            editor.insert("edited elsewhere", window, cx)
+        });
+        cx.run_until_parked();
+        workspace.read_with(&cx, |workspace, cx| {
+            assert!(second.read(cx).is_dirty(cx));
+            assert!(workspace.active_pane().read(cx).preview_item_id().is_none());
+            assert_eq!(workspace.items_of_type::<SoloDiffView>(cx).count(), 2);
+        });
+    }
+
+    #[gpui::test]
+    async fn test_file_diff_click_respects_disabled_previews(cx: &mut TestAppContext) {
+        init_test(cx);
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.preview_tabs.get_or_insert_default().enabled = Some(false);
+                });
+            });
+        });
+        let (_, _, workspace, panel, mut cx) = setup_git_panel_with_changes(
+            cx,
+            json!({ ".git": {}, "a.txt": "a", "b.txt": "b" }),
+            &[
+                ("a.txt", StatusCode::Modified),
+                ("b.txt", StatusCode::Modified),
+            ],
+        )
+        .await;
+        click_changed_file(&panel, "a.txt", false, &mut cx);
+        cx.run_until_parked();
+        click_changed_file(&panel, "b.txt", false, &mut cx);
+        cx.run_until_parked();
+        workspace.read_with(&cx, |workspace, cx| {
+            assert_eq!(workspace.items_of_type::<SoloDiffView>(cx).count(), 2);
+            assert!(workspace.active_pane().read(cx).preview_item_id().is_none());
+        });
+    }
+
+    #[gpui::test]
+    async fn test_file_diff_saved_edits_open_as_preview(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (_, project, workspace, panel, mut cx) = setup_git_panel_with_changes(
+            cx,
+            json!({ ".git": {}, "a.txt": "a", "b.txt": "b" }),
+            &[
+                ("a.txt", StatusCode::Modified),
+                ("b.txt", StatusCode::Modified),
+            ],
+        )
+        .await;
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.selected_entry = entry_index_for_repo_path(panel, &repo_path("a.txt"));
+            panel.view_file(&ViewFile, window, cx);
+        });
+        cx.run_until_parked();
+        let editor = workspace.read_with(&cx, |workspace, cx| {
+            workspace
+                .active_item_as::<Editor>(cx)
+                .expect("normal editor should open")
+        });
+        let buffer = editor.update_in(&mut cx, |editor, window, cx| {
+            editor.insert("saved change", window, cx);
+            editor
+                .active_buffer(cx)
+                .expect("editor should have a buffer")
+        });
+        project
+            .update(&mut cx, |project, cx| {
+                project.save_buffer(buffer.clone(), cx)
+            })
+            .await
+            .expect("edited buffer should save");
+        cx.run_until_parked();
+        click_changed_file(&panel, "a.txt", false, &mut cx);
+        cx.run_until_parked();
+        let diff = active_solo_diff(&workspace, &cx);
+        workspace.read_with(&cx, |workspace, cx| {
+            assert!(!diff.read(cx).is_dirty(cx));
+            assert_eq!(
+                workspace.active_pane().read(cx).preview_item_id(),
+                Some(diff.entity_id())
+            );
+        });
+        click_changed_file(&panel, "b.txt", false, &mut cx);
+        cx.run_until_parked();
+        workspace.read_with(&cx, |workspace, cx| {
+            assert_eq!(workspace.items_of_type::<SoloDiffView>(cx).count(), 1);
+        });
+    }
+
+    #[gpui::test(iterations = 20)]
+    async fn test_file_diff_concurrent_open_reuses_and_promotes_preview(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (_, _, workspace, panel, mut cx) = setup_git_panel_with_changes(
+            cx,
+            json!({ ".git": {}, "a.txt": "a" }),
+            &[("a.txt", StatusCode::Modified)],
+        )
+        .await;
+        let (first, second) = panel.update_in(&mut cx, |panel, window, cx| {
+            let index = entry_index_for_repo_path(panel, &repo_path("a.txt"))
+                .expect("changed file should exist");
+            let entry = panel
+                .entries
+                .get(index)
+                .and_then(GitListEntry::status_entry)
+                .expect("entry should be a file")
+                .clone();
+            let repository = panel
+                .active_repository
+                .clone()
+                .expect("repository should exist");
+            (
+                SoloDiffView::open_or_focus_with_preview(
+                    entry.clone(),
+                    repository.clone(),
+                    panel.workspace.clone(),
+                    true,
+                    window,
+                    cx,
+                ),
+                SoloDiffView::open_or_focus(entry, repository, panel.workspace.clone(), window, cx),
+            )
+        });
+        let (first, second) = futures::join!(first, second);
+        assert_eq!(
+            first.expect("preview should open"),
+            second.expect("permanent diff should open")
+        );
+        cx.run_until_parked();
+        workspace.read_with(&cx, |workspace, cx| {
+            assert_eq!(workspace.items_of_type::<SoloDiffView>(cx).count(), 1);
+            assert!(workspace.active_pane().read(cx).preview_item_id().is_none());
+        });
+    }
+
+    #[gpui::test]
+    async fn test_file_diff_click_preserves_other_primary_click_settings(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (_, _, workspace, panel, mut cx) = setup_git_panel_with_changes(
+            cx,
+            json!({ ".git": {}, "a.txt": "a" }),
+            &[("a.txt", StatusCode::Modified)],
+        )
+        .await;
+        for behavior in [
+            GitPanelClickBehavior::ProjectDiff,
+            GitPanelClickBehavior::ViewFile,
+        ] {
+            cx.update(|_, cx| {
+                SettingsStore::update_global(cx, |store, cx| {
+                    store.update_user_settings(cx, |settings| {
+                        settings
+                            .git_panel
+                            .get_or_insert_default()
+                            .entry_primary_click_action = Some(behavior);
+                    });
+                });
+            });
+            click_changed_file(&panel, "a.txt", false, &mut cx);
+            cx.run_until_parked();
+            workspace.read_with(&cx, |workspace, cx| match behavior {
+                GitPanelClickBehavior::ProjectDiff => {
+                    assert!(workspace.active_item_as::<ProjectDiff>(cx).is_some())
+                }
+                GitPanelClickBehavior::ViewFile => {
+                    assert!(workspace.active_item_as::<Editor>(cx).is_some())
+                }
+                GitPanelClickBehavior::FileDiff => unreachable!(),
+            });
+            click_changed_file(&panel, "a.txt", true, &mut cx);
+            cx.run_until_parked();
+            workspace.read_with(&cx, |workspace, cx| match behavior {
+                GitPanelClickBehavior::ProjectDiff => {
+                    assert!(workspace.active_item_as::<SoloDiffView>(cx).is_some());
+                    assert!(workspace.active_pane().read(cx).preview_item_id().is_none());
+                }
+                GitPanelClickBehavior::ViewFile => {
+                    assert!(workspace.active_item_as::<ProjectDiff>(cx).is_some())
+                }
+                GitPanelClickBehavior::FileDiff => unreachable!(),
+            });
+        }
     }
 
     #[gpui::test]

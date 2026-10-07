@@ -30,8 +30,8 @@ use std::{
 use ui::{DiffStat, Divider, Tooltip, prelude::*};
 use util::paths::{PathExt as _, PathStyle};
 use workspace::{
-    Item, ItemHandle, ItemNavHistory, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
-    Workspace,
+    Item, ItemHandle, ItemNavHistory, PreviewTabsSettings, ToolbarItemEvent, ToolbarItemLocation,
+    ToolbarItemView, Workspace,
     item::{ItemEvent, SaveOptions},
     notifications::NotifyTaskExt,
     searchable::SearchableItemHandle,
@@ -46,7 +46,9 @@ pub struct SoloDiffView {
     editor: Entity<SplittableEditor>,
     workspace: WeakEntity<Workspace>,
     showing_full_file: bool,
+    preview_version: clock::Global,
     _settings_subscription: Subscription,
+    _editor_subscription: Subscription,
 }
 
 impl SoloDiffView {
@@ -54,6 +56,17 @@ impl SoloDiffView {
         entry: GitStatusEntry,
         repository: Entity<Repository>,
         workspace: WeakEntity<Workspace>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Task<Result<Entity<Self>>> {
+        Self::open_or_focus_with_preview(entry, repository, workspace, false, window, cx)
+    }
+
+    pub fn open_or_focus_with_preview(
+        entry: GitStatusEntry,
+        repository: Entity<Repository>,
+        workspace: WeakEntity<Workspace>,
+        allow_preview: bool,
         window: &mut Window,
         cx: &mut App,
     ) -> Task<Result<Entity<Self>>> {
@@ -67,9 +80,8 @@ impl SoloDiffView {
             .find(|item| item.read(cx).matches(&repository, &entry.repo_path, cx));
         if let Some(existing) = existing {
             workspace_entity.update(cx, |workspace, cx| {
-                workspace.activate_item(&existing, true, true, window, cx);
+                Self::activate_existing(&existing, workspace, allow_preview, window, cx);
             });
-            existing.focus_handle(cx).focus(window, cx);
             return Task::ready(Ok(existing));
         }
 
@@ -98,6 +110,13 @@ impl SoloDiffView {
                 .await?;
 
             workspace_entity.update_in(cx, |workspace, window, cx| {
+                let existing = workspace
+                    .items_of_type::<Self>(cx)
+                    .find(|item| item.read(cx).matches(&repository, &repo_path, cx));
+                if let Some(existing) = existing {
+                    Self::activate_existing(&existing, workspace, allow_preview, window, cx);
+                    return existing;
+                }
                 let workspace_handle = cx.entity();
                 let view = cx.new(|cx| {
                     Self::new(
@@ -112,10 +131,51 @@ impl SoloDiffView {
                     )
                 });
 
-                workspace.add_item_to_active_pane(Box::new(view.clone()), None, true, window, cx);
+                let allow_preview = allow_preview
+                    && PreviewTabsSettings::get_global(cx).enabled
+                    && !view.read(cx).is_dirty(cx);
+                let destination_index = if allow_preview {
+                    workspace.active_pane().update(cx, |pane, cx| {
+                        if let Some(preview) = pane.preview_item()
+                            && preview.is_dirty(cx)
+                        {
+                            pane.unpreview_item_if_preview(preview.item_id());
+                        }
+                        pane.replace_preview_item_id(view.entity_id(), window, cx)
+                    })
+                } else {
+                    None
+                };
+                workspace.add_item_to_active_pane(
+                    Box::new(view.clone()),
+                    destination_index,
+                    true,
+                    window,
+                    cx,
+                );
                 view
             })
         })
+    }
+
+    fn activate_existing(
+        view: &Entity<Self>,
+        workspace: &mut Workspace,
+        allow_preview: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if (!allow_preview
+            || !PreviewTabsSettings::get_global(cx).enabled
+            || view.read(cx).is_dirty(cx))
+            && let Some(pane) = workspace.pane_for(view)
+        {
+            pane.update(cx, |pane, _| {
+                pane.unpreview_item_if_preview(view.entity_id());
+            });
+        }
+        workspace.activate_item(view, true, true, window, cx);
+        view.focus_handle(cx).focus(window, cx);
     }
 
     fn new(
@@ -129,6 +189,7 @@ impl SoloDiffView {
         cx: &mut Context<Self>,
     ) -> Self {
         let repository_id = repository.read(cx).id;
+        let preview_version = buffer.read(cx).version();
         let showing_full_file = EditorSettings::get_global(cx).file_diff.show_full_file;
         let multibuffer = cx
             .new(|cx| Self::build_multibuffer(buffer.clone(), diff.clone(), showing_full_file, cx));
@@ -157,6 +218,9 @@ impl SoloDiffView {
             editor
         });
 
+        let editor_subscription = cx.subscribe(&editor, |_, _, event: &EditorEvent, cx| {
+            cx.emit(event.clone());
+        });
         let mut previous_diff_view_style = EditorSettings::get_global(cx).diff_view_style;
         let settings_subscription =
             cx.observe_global_in::<SettingsStore>(window, move |this, window, cx| {
@@ -181,7 +245,9 @@ impl SoloDiffView {
             editor,
             workspace: workspace.downgrade(),
             showing_full_file,
+            preview_version,
             _settings_subscription: settings_subscription,
+            _editor_subscription: editor_subscription,
         }
     }
 
@@ -536,6 +602,20 @@ impl Item for SoloDiffView {
 
     fn can_save(&self, cx: &App) -> bool {
         self.editor.read(cx).rhs_editor().read(cx).can_save(cx)
+    }
+
+    fn is_dirty(&self, cx: &App) -> bool {
+        self.editor.read(cx).is_dirty(cx)
+    }
+
+    fn has_conflict(&self, cx: &App) -> bool {
+        self.editor.read(cx).has_conflict(cx)
+    }
+
+    fn preserve_preview(&self, cx: &App) -> bool {
+        let buffer = self.buffer.read(cx);
+        // Saved edits made before opening this diff must not promote its preview.
+        buffer.preserve_preview() || !buffer.has_edits_since(&self.preview_version)
     }
 
     fn save(

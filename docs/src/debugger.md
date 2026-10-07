@@ -13,6 +13,14 @@ Zed implements the client side of the protocol, and various _debug adapters_ imp
 This protocol enables features like setting breakpoints, stepping through code, inspecting variables,
 and more, in a consistent manner across different programming languages and runtime environments.
 
+## Clearing the Console
+
+Right-click the output in the debugger's Console tab and choose **Clear Console**.
+You can also run {#action console::ClearConsole} from the command palette while
+the console is focused. This clears the displayed output and keeps the debug
+session, watches, expression input, and expression history. New output appears
+normally, and you can also clear the console after the session ends.
+
 ## Supported Languages
 
 To debug code written in a specific language, Zed needs to find a debug adapter for that language. Some debug adapters are provided by Zed without additional setup, and some are provided by [language extensions](./extensions/debugger-extensions.md). The following languages currently have debug adapters available:

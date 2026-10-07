@@ -32,6 +32,16 @@ In the panel you can see the state of your project at a glance: which repository
 
 Zed monitors your repository so that changes you make on the command line are instantly reflected.
 
+Click a changed file to open its individual diff in a preview tab. Clicking
+another file replaces that preview. Double-click a file or edit it to keep its
+tab open. Saved changes that have not been committed do not mark the tab as
+having unsaved edits.
+
+To change this behavior, open **Panels > Git Panel** in the Settings Editor and
+change **Primary Click Behavior**. The default is `file_diff`; `project_diff`
+opens the combined changes view, and `view_file` opens the normal editor.
+The `preview_tabs.enabled` setting controls whether preview tabs are used.
+
 ### Configuration
 
 Open the Settings Editor (`Cmd+,` on macOS, `Ctrl+,` on Linux/Windows) to customize Git behavior. Settings are spread across two pages:
