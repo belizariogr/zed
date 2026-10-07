@@ -6800,8 +6800,8 @@ fn panels_page() -> SettingsPage {
                 files: USER,
             }),
             SettingsPageItem::SettingItem(SettingItem {
-                title: "Primary Click Behavior",
-                description: "Default action when clicking a changed file in the Git panel.",
+                title: "Single Click Action",
+                description: "Choose what a single click on a changed file opens: Uncommitted Changes, a file diff preview, or the file in the editor.",
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("git_panel.entry_primary_click_action"),

@@ -38,8 +38,10 @@ tab open. Saved changes that have not been committed do not mark the tab as
 having unsaved edits.
 
 To change this behavior, open **Panels > Git Panel** in the Settings Editor and
-change **Primary Click Behavior**. The default is `file_diff`; `project_diff`
-opens the combined changes view, and `view_file` opens the normal editor.
+change **Single Click Action**. Choose **Uncommitted Changes** for the combined
+changes view, **File Diff** for an individual diff preview (the default), or
+**Open File** for the normal editor. These options correspond to `project_diff`,
+`file_diff`, and `view_file` in `git_panel.entry_primary_click_action`.
 The `preview_tabs.enabled` setting controls whether preview tabs are used.
 
 ### Configuration
