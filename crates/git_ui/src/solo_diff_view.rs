@@ -32,7 +32,7 @@ use util::paths::{PathExt as _, PathStyle};
 use workspace::{
     Item, ItemHandle, ItemNavHistory, PreviewTabsSettings, ToolbarItemEvent, ToolbarItemLocation,
     ToolbarItemView, Workspace,
-    item::{ItemEvent, SaveOptions},
+    item::{ItemEvent, SaveOptions, TabContentParams},
     notifications::NotifyTaskExt,
     searchable::SearchableItemHandle,
 };
@@ -438,6 +438,14 @@ impl Focusable for SoloDiffView {
 
 impl Item for SoloDiffView {
     type Event = EditorEvent;
+
+    fn tab_content(&self, params: TabContentParams, _window: &Window, cx: &App) -> AnyElement {
+        Label::new(self.tab_content_text(params.detail.unwrap_or_default(), cx))
+            .single_line()
+            .color(params.text_color())
+            .when(params.preview, |this| this.italic())
+            .into_any_element()
+    }
 
     fn tab_icon(&self, _window: &Window, _cx: &App) -> Option<Icon> {
         Some(Icon::new(IconName::Diff).color(Color::Muted))
