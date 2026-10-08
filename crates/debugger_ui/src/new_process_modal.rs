@@ -218,6 +218,19 @@ impl NewProcessModal {
                                 )
                             }) {
                                 task.await;
+                                if debug_picker
+                                    .update_in(cx, |picker, window, cx| {
+                                        picker.delegate.auto_start_scenario(
+                                            &task_contexts,
+                                            window,
+                                            cx,
+                                        )
+                                    })
+                                    .log_err()
+                                    .unwrap_or(false)
+                                {
+                                    return Ok(());
+                                }
                                 debug_picker
                                     .update_in(cx, |picker, window, cx| {
                                         picker.refresh(window, cx);
@@ -1202,6 +1215,51 @@ impl DebugDelegate {
             })
             .ok();
         })
+    }
+
+    fn auto_start_scenario(
+        &mut self,
+        task_contexts: &TaskContexts,
+        window: &mut Window,
+        cx: &mut Context<Picker<Self>>,
+    ) -> bool {
+        let candidate = if self.candidates.len() == 1 {
+            self.candidates.first().cloned()
+        } else {
+            self.candidates
+                .first()
+                .filter(|(_, _, _, context)| context.is_some())
+                .cloned()
+        };
+        let Some((_, _, scenario, context)) = candidate else {
+            return false;
+        };
+
+        let context = context.unwrap_or_else(|| {
+            task_contexts
+                .active_context()
+                .cloned()
+                .map(|task_context| DebugScenarioContext {
+                    task_context: task_context.into(),
+                    active_buffer: None,
+                    worktree_id: task_contexts.worktree(),
+                })
+                .unwrap_or_default()
+        });
+        let DebugScenarioContext {
+            task_context,
+            worktree_id,
+            ..
+        } = context;
+
+        send_telemetry(&scenario, TelemetrySpawnLocation::ScenarioList, cx);
+        self.debug_panel
+            .update(cx, |panel, cx| {
+                panel.start_session(scenario, task_context, None, worktree_id, window, cx);
+            })
+            .log_err();
+        cx.emit(DismissEvent);
+        true
     }
 }
 
