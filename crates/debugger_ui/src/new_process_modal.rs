@@ -95,20 +95,99 @@ impl NewProcessModal {
                 // todo(debugger): get the buffer here (if the active item is an editor) and store it so we can pass it to start_session later
                 tasks_ui::task_contexts(workspace, window, cx)
             })?;
+            let debug_picker = workspace.update_in(cx, |_, window, cx| {
+                cx.new(|cx| {
+                    let delegate = DebugDelegate::new(debug_panel.downgrade(), task_store.clone());
+                    Picker::list(delegate, window, cx)
+                        .embedded()
+                        .list_measure_all()
+                })
+            })?;
+            let task_contexts = task_contexts.await;
+            let task_contexts = Arc::new(task_contexts);
+            let lsp_task_sources = task_contexts.lsp_task_sources.clone();
+            let task_position = task_contexts.latest_selection;
+            // Get LSP tasks and filter out based on language vs lsp preference
+            let (lsp_tasks, prefer_lsp) = workspace.update(cx, |workspace, cx| {
+                let lsp_tasks = editor::lsp_tasks(
+                    workspace.project().clone(),
+                    &lsp_task_sources,
+                    task_position,
+                    cx,
+                );
+                let prefer_lsp = workspace
+                    .active_item(cx)
+                    .and_then(|item| item.downcast::<Editor>())
+                    .map(|editor| {
+                        editor
+                            .read(cx)
+                            .buffer()
+                            .read(cx)
+                            .language_settings(cx)
+                            .tasks
+                            .prefer_lsp
+                    })
+                    .unwrap_or(false);
+                (lsp_tasks, prefer_lsp)
+            })?;
+
+            let lsp_tasks = lsp_tasks.await;
+            let add_current_language_tasks = !prefer_lsp || lsp_tasks.is_empty();
+
+            let lsp_tasks = lsp_tasks
+                .into_iter()
+                .flat_map(|(kind, tasks_with_locations)| {
+                    tasks_with_locations
+                        .into_iter()
+                        .sorted_by_key(|(location, task)| {
+                            (location.is_none(), task.resolved_label.clone())
+                        })
+                        .map(move |(_, task)| (kind.clone(), task))
+                })
+                .collect::<Vec<_>>();
+
+            let Some(task_inventory) =
+                task_store.update(cx, |task_store, _| task_store.task_inventory().cloned())
+            else {
+                return Ok(());
+            };
+
+            let (used_tasks, current_resolved_tasks) = task_inventory
+                .update(cx, |task_inventory, cx| {
+                    task_inventory.used_and_current_resolved_tasks(task_contexts.clone(), cx)
+                })
+                .await;
+
+            let task = debug_picker.update(cx, |picker, cx| {
+                picker.delegate.tasks_loaded(
+                    task_contexts.clone(),
+                    languages,
+                    lsp_tasks.clone(),
+                    current_resolved_tasks.clone(),
+                    add_current_language_tasks,
+                    cx,
+                )
+            });
+            task.await;
+            if matches!(mode, NewProcessMode::Debug)
+                && debug_picker.update_in(cx, |picker, window, cx| {
+                    picker
+                        .delegate
+                        .auto_start_scenario(&task_contexts, window, cx)
+                })?
+            {
+                return Ok(());
+            }
+
             workspace.update_in(cx, |workspace, window, cx| {
                 let workspace_handle = workspace.weak_handle();
                 let project = workspace.project().clone();
+                debug_picker.update(cx, |picker, cx| {
+                    picker.refresh(window, cx);
+                });
                 workspace.toggle_modal(window, cx, |window, cx| {
                     let attach_mode =
                         AttachMode::new(None, workspace_handle.clone(), project, window, cx);
-
-                    let debug_picker = cx.new(|cx| {
-                        let delegate =
-                            DebugDelegate::new(debug_panel.downgrade(), task_store.clone());
-                        Picker::list(delegate, window, cx)
-                            .embedded()
-                            .list_measure_all()
-                    });
 
                     let configure_mode = ConfigureMode::new(window, cx);
 
@@ -143,136 +222,26 @@ impl NewProcessModal {
                         }),
                     ];
 
-                    cx.spawn_in(window, {
-                        let debug_picker = debug_picker.downgrade();
-                        let configure_mode = configure_mode.downgrade();
-                        let task_modal = task_mode.task_modal.downgrade();
-                        let workspace = workspace_handle.clone();
+                    if let Some(active_cwd) = task_contexts
+                        .active_context()
+                        .and_then(|context| context.cwd.clone())
+                    {
+                        configure_mode.update(cx, |configure_mode, cx| {
+                            configure_mode.load(active_cwd, window, cx);
+                        });
+                    }
 
-                        async move |this, cx| {
-                            let task_contexts = task_contexts.await;
-                            let task_contexts = Arc::new(task_contexts);
-                            let lsp_task_sources = task_contexts.lsp_task_sources.clone();
-                            let task_position = task_contexts.latest_selection;
-                            // Get LSP tasks and filter out based on language vs lsp preference
-                            let (lsp_tasks, prefer_lsp) =
-                                workspace.update(cx, |workspace, cx| {
-                                    let lsp_tasks = editor::lsp_tasks(
-                                        workspace.project().clone(),
-                                        &lsp_task_sources,
-                                        task_position,
-                                        cx,
-                                    );
-                                    let prefer_lsp = workspace
-                                        .active_item(cx)
-                                        .and_then(|item| item.downcast::<Editor>())
-                                        .map(|editor| {
-                                            editor
-                                                .read(cx)
-                                                .buffer()
-                                                .read(cx)
-                                                .language_settings(cx)
-                                                .tasks
-                                                .prefer_lsp
-                                        })
-                                        .unwrap_or(false);
-                                    (lsp_tasks, prefer_lsp)
-                                })?;
-
-                            let lsp_tasks = lsp_tasks.await;
-                            let add_current_language_tasks = !prefer_lsp || lsp_tasks.is_empty();
-
-                            let lsp_tasks = lsp_tasks
-                                .into_iter()
-                                .flat_map(|(kind, tasks_with_locations)| {
-                                    tasks_with_locations
-                                        .into_iter()
-                                        .sorted_by_key(|(location, task)| {
-                                            (location.is_none(), task.resolved_label.clone())
-                                        })
-                                        .map(move |(_, task)| (kind.clone(), task))
-                                })
-                                .collect::<Vec<_>>();
-
-                            let Some(task_inventory) = task_store
-                                .update(cx, |task_store, _| task_store.task_inventory().cloned())
-                            else {
-                                return Ok(());
-                            };
-
-                            let (used_tasks, current_resolved_tasks) = task_inventory
-                                .update(cx, |task_inventory, cx| {
-                                    task_inventory
-                                        .used_and_current_resolved_tasks(task_contexts.clone(), cx)
-                                })
-                                .await;
-
-                            if let Ok(task) = debug_picker.update(cx, |picker, cx| {
-                                picker.delegate.tasks_loaded(
-                                    task_contexts.clone(),
-                                    languages,
-                                    lsp_tasks.clone(),
-                                    current_resolved_tasks.clone(),
-                                    add_current_language_tasks,
-                                    cx,
-                                )
-                            }) {
-                                task.await;
-                                if debug_picker
-                                    .update_in(cx, |picker, window, cx| {
-                                        picker.delegate.auto_start_scenario(
-                                            &task_contexts,
-                                            window,
-                                            cx,
-                                        )
-                                    })
-                                    .log_err()
-                                    .unwrap_or(false)
-                                {
-                                    return Ok(());
-                                }
-                                debug_picker
-                                    .update_in(cx, |picker, window, cx| {
-                                        picker.refresh(window, cx);
-                                        cx.notify();
-                                    })
-                                    .ok();
-                            }
-
-                            if let Some(active_cwd) = task_contexts
-                                .active_context()
-                                .and_then(|context| context.cwd.clone())
-                            {
-                                configure_mode
-                                    .update_in(cx, |configure_mode, window, cx| {
-                                        configure_mode.load(active_cwd, window, cx);
-                                    })
-                                    .ok();
-                            }
-
-                            task_modal
-                                .update_in(cx, |task_modal, window, cx| {
-                                    task_modal.tasks_loaded(
-                                        task_contexts,
-                                        lsp_tasks,
-                                        used_tasks,
-                                        current_resolved_tasks,
-                                        add_current_language_tasks,
-                                        window,
-                                        cx,
-                                    );
-                                })
-                                .ok();
-
-                            this.update(cx, |_, cx| {
-                                cx.notify();
-                            })
-                            .ok();
-
-                            anyhow::Ok(())
-                        }
-                    })
-                    .detach();
+                    task_mode.task_modal.update(cx, |task_modal, cx| {
+                        task_modal.tasks_loaded(
+                            task_contexts,
+                            lsp_tasks,
+                            used_tasks,
+                            current_resolved_tasks,
+                            add_current_language_tasks,
+                            window,
+                            cx,
+                        );
+                    });
 
                     Self {
                         debug_picker,
@@ -290,7 +259,7 @@ impl NewProcessModal {
 
             anyhow::Ok(())
         })
-        .detach();
+        .detach_and_log_err(cx);
     }
 
     fn render_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl ui::IntoElement {
@@ -1257,9 +1226,8 @@ impl DebugDelegate {
             .update(cx, |panel, cx| {
                 panel.start_session(scenario, task_context, None, worktree_id, window, cx);
             })
-            .log_err();
-        cx.emit(DismissEvent);
-        true
+            .log_err()
+            .is_some()
     }
 }
 

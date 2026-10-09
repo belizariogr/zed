@@ -18,6 +18,102 @@ use crate::new_process_modal::NewProcessModal;
 use crate::tests::{init_test, init_test_workspace};
 
 #[gpui::test]
+async fn test_single_debug_scenario_starts_without_creating_modal(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor);
+    fs.insert_tree(
+        path!("/project"),
+        json!({
+            ".zed": {
+                "debug.json": r#"[
+                    {
+                        "adapter": "fake-adapter",
+                        "label": "Debug App",
+                        "request": "launch",
+                        "program": "./app",
+                        "cwd": "."
+                    }
+                ]"#
+            },
+            "main.rs": "fn main() {}"
+        }),
+    )
+    .await;
+
+    let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+    let workspace = init_test_workspace(&project, cx).await;
+    let modal_created = Arc::new(AtomicBool::new(false));
+    let _modal_subscription = cx.update({
+        let modal_created = modal_created.clone();
+        move |cx| {
+            cx.observe_new::<NewProcessModal>(move |_, _, _| {
+                modal_created.store(true, Ordering::SeqCst);
+            })
+        }
+    });
+    let launch_called = Arc::new(AtomicBool::new(false));
+    let _session_subscription = project::debugger::test::intercept_debug_sessions(cx, {
+        let launch_called = launch_called.clone();
+        move |client| {
+            client.on_request::<dap::requests::Launch, _>({
+                let launch_called = launch_called.clone();
+                move |_, _| {
+                    launch_called.store(true, Ordering::SeqCst);
+                    Ok(())
+                }
+            });
+        }
+    });
+    let cx = &mut VisualTestContext::from_window(*workspace, cx);
+
+    workspace
+        .update(cx, |multi, window, cx| {
+            multi.workspace().update(cx, |workspace, cx| {
+                NewProcessModal::show(workspace, window, NewProcessMode::Debug, None, cx);
+            });
+        })
+        .expect("Workspace window should exist");
+    cx.run_until_parked();
+
+    assert!(launch_called.load(Ordering::SeqCst));
+    assert!(
+        !modal_created.load(Ordering::SeqCst),
+        "Direct execution must never create the modal, even temporarily"
+    );
+    assert!(
+        workspace
+            .update(cx, |workspace, _, cx| {
+                workspace.active_modal::<NewProcessModal>(cx).is_none()
+            })
+            .expect("Workspace window should exist")
+    );
+
+    launch_called.store(false, Ordering::SeqCst);
+    workspace
+        .update(cx, |multi, window, cx| {
+            multi.workspace().update(cx, |workspace, cx| {
+                NewProcessModal::show(workspace, window, NewProcessMode::Task, None, cx);
+            });
+        })
+        .expect("Workspace window should exist");
+    cx.run_until_parked();
+
+    assert!(modal_created.load(Ordering::SeqCst));
+    assert!(!launch_called.load(Ordering::SeqCst));
+    assert!(
+        workspace
+            .update(cx, |workspace, _, cx| {
+                workspace.active_modal::<NewProcessModal>(cx).is_some()
+            })
+            .expect("Workspace window should exist")
+    );
+}
+
+#[gpui::test]
 async fn test_debug_session_substitutes_variables_and_relativizes_paths(
     executor: BackgroundExecutor,
     cx: &mut TestAppContext,
