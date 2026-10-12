@@ -1,5 +1,8 @@
 // Disable command line from opening on release mode
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Apple's ld cannot encode compact unwind once __eh_frame exceeds 16MB in this
+// binary; exception handling still uses DWARF unwind.
+#![cfg_attr(target_os = "macos", allow(linker_messages))]
 
 mod reliability;
 mod watcher_debug;

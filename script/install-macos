@@ -110,7 +110,12 @@ export ZED_UPDATE_EXPLANATION="Rebuild with ${root}/script/install-macos"
 export ZED_BUNDLE=false
 export CXXFLAGS="${CXXFLAGS:-} -stdlib=libc++"
 
-echo "==> Building Zed ${version} (${channel}) in release mode"
+git_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+if [[ -n "$git_sha" ]]; then
+  echo "==> Building Zed ${version} (${channel}) in release mode (${git_sha})"
+else
+  echo "==> Building Zed ${version} (${channel}) in release mode"
+fi
 cargo build --release --locked --package zed --package cli --target "$target_triple"
 
 release_directory="${target_directory}/${target_triple}/release"
