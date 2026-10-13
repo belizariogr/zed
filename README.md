@@ -1,5 +1,3 @@
-> [!IMPORTANT]
-> Remove this line to confirm you've reviewed this PR before submitting.
 # Zed (Repack)
 
 This repository is a **repack** of [Zed](https://zed.dev) maintained by [Belizário Ribeiro](https://github.com/belizariogr), with personalizations and additional features on top of the official upstream ([zed-industries/zed](https://github.com/zed-industries/zed)).
