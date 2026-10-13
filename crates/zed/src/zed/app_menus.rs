@@ -280,42 +280,15 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
                         editor::actions::ToggleNumberedBookmark9,
                     ),
                     MenuItem::separator(),
-                    MenuItem::action(
-                        "Go to Bookmark 1",
-                        editor::actions::JumpToNumberedBookmark1,
-                    ),
-                    MenuItem::action(
-                        "Go to Bookmark 2",
-                        editor::actions::JumpToNumberedBookmark2,
-                    ),
-                    MenuItem::action(
-                        "Go to Bookmark 3",
-                        editor::actions::JumpToNumberedBookmark3,
-                    ),
-                    MenuItem::action(
-                        "Go to Bookmark 4",
-                        editor::actions::JumpToNumberedBookmark4,
-                    ),
-                    MenuItem::action(
-                        "Go to Bookmark 5",
-                        editor::actions::JumpToNumberedBookmark5,
-                    ),
-                    MenuItem::action(
-                        "Go to Bookmark 6",
-                        editor::actions::JumpToNumberedBookmark6,
-                    ),
-                    MenuItem::action(
-                        "Go to Bookmark 7",
-                        editor::actions::JumpToNumberedBookmark7,
-                    ),
-                    MenuItem::action(
-                        "Go to Bookmark 8",
-                        editor::actions::JumpToNumberedBookmark8,
-                    ),
-                    MenuItem::action(
-                        "Go to Bookmark 9",
-                        editor::actions::JumpToNumberedBookmark9,
-                    ),
+                    MenuItem::action("Go to Bookmark 1", editor::actions::JumpToNumberedBookmark1),
+                    MenuItem::action("Go to Bookmark 2", editor::actions::JumpToNumberedBookmark2),
+                    MenuItem::action("Go to Bookmark 3", editor::actions::JumpToNumberedBookmark3),
+                    MenuItem::action("Go to Bookmark 4", editor::actions::JumpToNumberedBookmark4),
+                    MenuItem::action("Go to Bookmark 5", editor::actions::JumpToNumberedBookmark5),
+                    MenuItem::action("Go to Bookmark 6", editor::actions::JumpToNumberedBookmark6),
+                    MenuItem::action("Go to Bookmark 7", editor::actions::JumpToNumberedBookmark7),
+                    MenuItem::action("Go to Bookmark 8", editor::actions::JumpToNumberedBookmark8),
+                    MenuItem::action("Go to Bookmark 9", editor::actions::JumpToNumberedBookmark9),
                     MenuItem::separator(),
                     MenuItem::action("List Bookmarks", editor::actions::ListNumberedBookmarks),
                     MenuItem::action(

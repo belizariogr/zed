@@ -837,11 +837,7 @@ mod integration {
 
         let locations = numbered_locations(&project, cx);
         assert_eq!(locations.len(), 1);
-        assert!(
-            locations[0]
-                .0
-                .ends_with(std::path::Path::new("file2.rs"))
-        );
+        assert!(locations[0].0.ends_with(std::path::Path::new("file2.rs")));
         assert_eq!(locations[0].1.number, 3);
         assert_eq!(locations[0].1.row, 1);
         assert_eq!(locations[0].1.column, 1);

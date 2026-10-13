@@ -1410,11 +1410,13 @@ impl WorkspaceDb {
                         continue;
                     }
                     let path: Arc<Path> = path.into();
-                    map.entry(path).or_default().push(SerializedNumberedBookmark {
-                        number: number as u8,
-                        row: row as u32,
-                        column: column as u32,
-                    });
+                    map.entry(path)
+                        .or_default()
+                        .push(SerializedNumberedBookmark {
+                            number: number as u8,
+                            row: row as u32,
+                            column: column as u32,
+                        });
                 }
                 map
             }

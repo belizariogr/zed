@@ -986,8 +986,10 @@ mod tests {
 
     #[test]
     fn test_imported_class_highlighting() {
-        let source = Rope::from(r#"import { Dog } from "./dog";
-Dog.bark();"#);
+        let source = Rope::from(
+            r#"import { Dog } from "./dog";
+Dog.bark();"#,
+        );
         let theme = SyntaxTheme::new_test([("type", Hsla::blue()), ("type.class", Hsla::green())]);
 
         for language in [

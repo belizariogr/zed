@@ -736,7 +736,7 @@ pub struct Session {
     parent_session: Option<Entity<Session>>,
     browser_launch_url: Option<String>,
     output_token: OutputToken,
-    output: Box<circular_buffer::CircularBuffer<MAX_TRACKED_OUTPUT_EVENTS, dap::OutputEvent>>,
+    output: VecDeque<dap::OutputEvent>,
     watchers: HashMap<SharedString, Watcher>,
     watch_expressions: Entity<WatchExpressionStore>,
     is_session_terminated: bool,
@@ -937,7 +937,7 @@ impl Session {
                     .collect(),
                 watch_expressions,
                 output_token: OutputToken(0),
-                output: circular_buffer::CircularBuffer::boxed(),
+                output: VecDeque::with_capacity(MAX_TRACKED_OUTPUT_EVENTS),
                 requests: Default::default(),
                 background_tasks: Vec::default(),
                 restart_task: None,
@@ -1911,6 +1911,9 @@ impl Session {
     }
 
     fn push_output(&mut self, event: OutputEvent) {
+        if self.output.len() == MAX_TRACKED_OUTPUT_EVENTS {
+            self.output.pop_front();
+        }
         self.output.push_back(event);
         self.output_token.0 += 1;
     }

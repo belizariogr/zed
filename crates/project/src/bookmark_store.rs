@@ -588,9 +588,10 @@ impl BookmarkStore {
         let snapshot = buffer.read(cx).text_snapshot();
         let row = anchor.summary::<Point>(&snapshot).row;
         let should_set = {
-            let entry = self.bookmarks.entry(abs_path.clone()).or_insert_with(|| {
-                BookmarkEntry::Loaded(BufferBookmarks::new(buffer.clone(), cx))
-            });
+            let entry = self
+                .bookmarks
+                .entry(abs_path.clone())
+                .or_insert_with(|| BookmarkEntry::Loaded(BufferBookmarks::new(buffer.clone(), cx)));
 
             let BookmarkEntry::Loaded(buffer_bookmarks) = entry else {
                 unreachable!("resolve_if_needed should have converted to Loaded");
@@ -1083,9 +1084,7 @@ impl BookmarkStore {
             this.bookmarks
                 .iter()
                 .filter_map(|(path, entry)| match entry {
-                    BookmarkEntry::Unloaded { .. }
-                        if !this.paths_failed_to_open.contains(path) =>
-                    {
+                    BookmarkEntry::Unloaded { .. } if !this.paths_failed_to_open.contains(path) => {
                         Some(path.clone())
                     }
                     _ => None,
