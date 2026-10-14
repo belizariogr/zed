@@ -1,0 +1,5 @@
+<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+<metadata>Microsoft VS Code Codicons. License: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Source: https://github.com/microsoft/vscode-codicons/blob/2723a008851b94140a9d977a225dfd37db8e7c6d/src/icons/collapse-all.svg. Unmodified geometry.</metadata>
+<path d="M9 9H4v1h5V9z"/>
+<path fill-rule="evenodd" clip-rule="evenodd" d="M5 3l1-1h7l1 1v7l-1 1h-2v2l-1 1H3l-1-1V6l1-1h2V3zm1 2h4l1 1v4h2V3H6v2zm4 1H3v7h7V6z"/>
+</svg>

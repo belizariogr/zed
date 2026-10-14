@@ -207,6 +207,7 @@ Newest first. Hashes may change if history is rewritten; match by message/intent
 
 | Commit | Summary | What to preserve |
 | --- | --- | --- |
+| Match by summary | Show project tree controls while hovering the file panel | Right-aligned, borderless New File (file with plus), New Folder, and Collapse All (overlapping squares with minus) buttons use the original classic VS Code Codicons at 16 px and the theme's muted text color at 75% opacity, appearing on project roots while hovering anywhere in the project panel; creation uses the selected directory (or the selected file's parent) and respects read-only projects (`project_panel`). |
 | Match by summary | Add Close Panel button to the terminal panel | Always-visible Close Panel icon in the terminal tab bar (divider only when New/Split/Zoom are shown), emitting `PanelEvent::Close` so the dock closes regardless of left/bottom/right position; preserve existing New/Split/Zoom focus-only controls (`terminal_view` terminal_panel). |
 | Match by summary | Add debugger console clearing | Right-click Clear Console and `console::ClearConsole`, clearing output and ANSI highlights without replaying pending output; preserve the debug session, watches, query input/history, and subsequent output (`debugger_ui` console). |
 | Match by summary | Preview individual file diffs from the Git panel | Default `file_diff` single-click preview replaces the previous preview; double-click and edits keep the tab open; Single Click Action in Panels > Git Panel selects Uncommitted Changes, File Diff, or Open File; preserve explicit click/preview settings, unsaved edits in shared buffers, and deduplication during rapid/concurrent opens (`git_ui` panel/solo_diff_view, settings/settings_ui). |
@@ -225,6 +226,6 @@ Newest first. Hashes may change if history is rewritten; match by message/intent
 | `5ddf1bbc37` | Add Bun debugger and activate session windows on breakpoints | Bun DAP adapter/inspector, Bun debug locator, docs, and bringing session windows forward on breakpoints. |
 | `c4de2623fa` | Install Linux system builds as stable with reliable icons | `script/install-linux-system` defaults to stable channel and absolute desktop icon path. |
 | `c9f5940cd8` | Add system-wide Linux install script | System-wide Linux install path: CLI in `/usr/bin`, editor under `/usr/lib/zed` (`script/install-linux-system`). |
-| `96bf5e1fe5` | Enhance Project Panel UI with Root State Handling | Project panel `is_root` handling, root-specific padding/collapse-all behavior; show the collapse-all button only while hovering the project row (`project_panel`). |
+| `96bf5e1fe5` | Enhance Project Panel UI with Root State Handling | Project panel `is_root` handling and root-specific padding/collapse-all behavior; control visibility follows the panel hover personalization above (`project_panel`). |
 
 Note: `5925f8fbfc` is only the merge of the PascalCase highlighting branch into `main`; the personalization itself is `11174d394d`.

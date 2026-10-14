@@ -23,9 +23,9 @@ use gpui::{
     DragMoveEvent, Entity, EventEmitter, ExternalDragPayload, ExternalPaths, FileDragPaths,
     FileDropEvent, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement, KeyContext,
     ListHorizontalSizingBehavior, ListSizingBehavior, Modifiers, ModifiersChangedEvent,
-    MouseButton, MouseDownEvent, MouseExitEvent, ParentElement, PathPromptOptions, Pixels, Point,
-    PromptLevel, Render, ScrollStrategy, Stateful, Styled, Subscription, Task,
-    UniformListScrollHandle, WeakEntity, Window, actions, anchored, deferred, div, hsla,
+    MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, ParentElement, PathPromptOptions,
+    Pixels, Point, PromptLevel, Render, ScrollStrategy, Stateful, Styled, Subscription, Task,
+    UniformListScrollHandle, WeakEntity, Window, actions, anchored, canvas, deferred, div, hsla,
     linear_color_stop, linear_gradient, point, px, size, transparent_white, uniform_list,
 };
 use itertools::Itertools;
@@ -160,6 +160,7 @@ pub struct ProjectPanel {
     // We keep track of the mouse down state on entries so we don't flash the UI
     // in case a user clicks to open a file.
     mouse_down: bool,
+    is_hovered: bool,
     hover_expand_task: Option<Task<()>>,
     previous_drag_position: Option<Point<Pixels>>,
     sticky_items_count: usize,
@@ -899,6 +900,7 @@ impl ProjectPanel {
                 diagnostic_summary_update: Task::ready(()),
                 scroll_handle,
                 mouse_down: false,
+                is_hovered: false,
                 hover_expand_task: None,
                 previous_drag_position: None,
                 sticky_items_count: 0,
@@ -6628,31 +6630,95 @@ impl ProjectPanel {
                                     .when_some(symlink_element, |this, el| this.child(el))
                                     .when(is_root, |this| {
                                         this.child(
-                                            IconButton::new(
-                                                "project-panel-collapse-all",
-                                                IconName::Dash,
-                                            )
-                                            .icon_size(IconSize::Small)
-                                            .shape(IconButtonShape::Square)
-                                            .style(ButtonStyle::OutlinedGhost)
-                                            .visible_on_hover(GROUP_NAME)
-                                            .tooltip(|_window, cx| {
-                                                Tooltip::for_action(
-                                                    "Collapse All",
-                                                    &CollapseAllEntries,
-                                                    cx,
-                                                )
-                                            })
-                                            .on_click(
-                                                cx.listener(|this, _, window, cx| {
-                                                    this.collapse_all_entries(
-                                                        &CollapseAllEntries,
-                                                        window,
-                                                        cx,
-                                                    );
+                                            h_flex()
+                                                .gap_1()
+                                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                                     cx.stop_propagation();
-                                                }),
-                                            ),
+                                                })
+                                                .when(!self.is_hovered, |this| this.invisible())
+                                                .when(
+                                                    !self.project.read(cx).is_read_only(cx),
+                                                    |this| {
+                                                        this.child(
+                                                            IconButton::new(
+                                                                "project-panel-new-file",
+                                                                IconName::FileAdd,
+                                                            )
+                                                            .icon_size(IconSize::Medium)
+                                                            .icon_color(Color::Muted)
+                                                            .alpha(0.75)
+                                                            .shape(IconButtonShape::Square)
+                                                            .style(ButtonStyle::Subtle)
+                                                            .tooltip(|_window, cx| {
+                                                                Tooltip::for_action(
+                                                                    "New File", &NewFile, cx,
+                                                                )
+                                                            })
+                                                            .on_click(cx.listener(
+                                                                |this, _, window, cx| {
+                                                                    this.new_file(
+                                                                        &NewFile, window, cx,
+                                                                    );
+                                                                    cx.stop_propagation();
+                                                                },
+                                                            )),
+                                                        )
+                                                        .child(
+                                                            IconButton::new(
+                                                                "project-panel-new-directory",
+                                                                IconName::FolderAddThin,
+                                                            )
+                                                            .icon_size(IconSize::Medium)
+                                                            .icon_color(Color::Muted)
+                                                            .alpha(0.75)
+                                                            .shape(IconButtonShape::Square)
+                                                            .style(ButtonStyle::Subtle)
+                                                            .tooltip(|_window, cx| {
+                                                                Tooltip::for_action(
+                                                                    "New Folder",
+                                                                    &NewDirectory,
+                                                                    cx,
+                                                                )
+                                                            })
+                                                            .on_click(cx.listener(
+                                                                |this, _, window, cx| {
+                                                                    this.new_directory(
+                                                                        &NewDirectory,
+                                                                        window,
+                                                                        cx,
+                                                                    );
+                                                                    cx.stop_propagation();
+                                                                },
+                                                            )),
+                                                        )
+                                                    },
+                                                )
+                                                .child(
+                                                    IconButton::new(
+                                                        "project-panel-collapse-all",
+                                                        IconName::CollapseAll,
+                                                    )
+                                                    .icon_size(IconSize::Medium)
+                                                    .icon_color(Color::Muted)
+                                                    .alpha(0.75)
+                                                    .shape(IconButtonShape::Square)
+                                                    .style(ButtonStyle::Subtle)
+                                                    .tooltip(|_window, cx| {
+                                                        Tooltip::for_action(
+                                                            "Collapse All",
+                                                            &CollapseAllEntries,
+                                                            cx,
+                                                        )
+                                                    })
+                                                    .on_click(cx.listener(|this, _, window, cx| {
+                                                        this.collapse_all_entries(
+                                                            &CollapseAllEntries,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                        cx.stop_propagation();
+                                                    })),
+                                                ),
                                         )
                                     })
                                     .into_any_element(),
@@ -7592,7 +7658,47 @@ impl Render for ProjectPanel {
             }
             h_flex()
                 .id("project-panel")
+                .debug_selector(|| "project-panel".into())
                 .group("project-panel")
+                .child(
+                    canvas(|_, _, _| {}, {
+                        let on_mouse_move = cx.listener(|this, hovered: &bool, _, cx| {
+                            if this.is_hovered != *hovered {
+                                this.is_hovered = *hovered;
+                                cx.notify();
+                            }
+                        });
+                        let on_mouse_exit = cx.listener(|this, _: &MouseExitEvent, _, cx| {
+                            if this.is_hovered {
+                                this.is_hovered = false;
+                                cx.notify();
+                            }
+                        });
+                        move |bounds, _, window, _| {
+                            // Blank space and sticky rows block ancestor hover hit testing.
+                            window.on_mouse_event(
+                                move |event: &MouseMoveEvent, phase, window, cx| {
+                                    if phase.capture() {
+                                        on_mouse_move(
+                                            &bounds.contains(&event.position),
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                },
+                            );
+                            window.on_mouse_event(
+                                move |event: &MouseExitEvent, phase, window, cx| {
+                                    if phase.capture() {
+                                        on_mouse_exit(event, window, cx);
+                                    }
+                                },
+                            );
+                        }
+                    })
+                    .absolute()
+                    .size_full(),
+                )
                 .when(panel_settings.drag_and_drop, |this| {
                     this.on_drag_move(cx.listener(handle_drag_move::<ExternalPaths>))
                         .on_drag_move(cx.listener(handle_drag_move::<DraggedSelection>))

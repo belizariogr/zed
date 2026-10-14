@@ -12389,6 +12389,88 @@ async fn run_create_file_in_folded_path_case(
 }
 
 #[gpui::test]
+async fn test_project_root_controls_hover_and_creation(cx: &mut TestAppContext) {
+    init_test_with_editor(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/root"), json!({ "selected": { "file.txt": "" } }))
+        .await;
+    let project = Project::test(fs, [path!("/root").as_ref()], cx).await;
+    let (window, panel) = create_drag_test_panel(&project, cx);
+    let cx = &mut VisualTestContext::from_window(window, cx);
+    let panel_bounds = cx.debug_bounds("project-panel").expect("panel is rendered");
+    let selected_entry =
+        find_project_entry(&panel, "root/selected", cx).expect("selected directory exists");
+    let selected_file =
+        find_project_entry(&panel, "root/selected/file.txt", cx).expect("selected file exists");
+
+    cx.simulate_mouse_move(panel_bounds.center(), None, Modifiers::none());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(panel.read_with(cx, |panel, _| panel.is_hovered));
+
+    let file_button = cx
+        .debug_bounds("ICON-FileAdd")
+        .expect("new file button is visible");
+    let folder_button = cx
+        .debug_bounds("ICON-FolderAddThin")
+        .expect("new folder button is visible");
+    let collapse_button = cx
+        .debug_bounds("ICON-CollapseAll")
+        .expect("collapse button is visible");
+    assert!(file_button.origin.x < folder_button.origin.x);
+    assert!(folder_button.origin.x < collapse_button.origin.x);
+
+    for (entry_id, position, is_directory) in [
+        (selected_entry, file_button.center(), false),
+        (selected_entry, folder_button.center(), true),
+        (selected_file, file_button.center(), false),
+        (selected_file, folder_button.center(), true),
+    ] {
+        panel.update(cx, |panel, cx| {
+            let worktree_id = panel
+                .project
+                .read(cx)
+                .worktree_id_for_entry(entry_id, cx)
+                .expect("selected entry belongs to a worktree");
+            panel.selection = Some(SelectedEntry {
+                worktree_id,
+                entry_id,
+            });
+            cx.notify();
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_mouse_move(position, None, Modifiers::none());
+        cx.simulate_click(position, Modifiers::none());
+        panel.read_with(cx, |panel, _| {
+            let edit_state = panel
+                .state
+                .edit_state
+                .as_ref()
+                .expect("creation has started");
+            assert_eq!(edit_state.entry_id, selected_entry);
+            assert_eq!(edit_state.is_dir, is_directory);
+        });
+        panel.update_in(cx, |panel, window, cx| panel.cancel(&Cancel, window, cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::none());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(!panel.read_with(cx, |panel, _| panel.is_hovered));
+    assert!(cx.debug_bounds("ICON-FolderAddThin").is_none());
+
+    cx.simulate_mouse_move(panel_bounds.center(), None, Modifiers::none());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(panel.read_with(cx, |panel, _| panel.is_hovered));
+    cx.simulate_event(MouseExitEvent {
+        position: panel_bounds.center(),
+        pressed_button: None,
+        modifiers: Modifiers::none(),
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(!panel.read_with(cx, |panel, _| panel.is_hovered));
+}
+
+#[gpui::test]
 async fn test_focus_follows_mouse_into_blank_area(cx: &mut gpui::TestAppContext) {
     init_test_with_editor(cx);
     cx.update(|cx| {
