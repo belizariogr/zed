@@ -12389,8 +12389,180 @@ async fn run_create_file_in_folded_path_case(
 }
 
 #[gpui::test]
+async fn test_project_root_tooltip_excludes_controls(cx: &mut TestAppContext) {
+    init_test_with_editor(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/root"), json!({ "file.txt": "" }))
+        .await;
+    let project = Project::test(fs, [path!("/root").as_ref()], cx).await;
+    let (window, _panel) = create_drag_test_panel(&project, cx);
+    let cx = &mut VisualTestContext::from_window(window, cx);
+    let panel_bounds = cx.debug_bounds("project-panel").expect("panel is rendered");
+    cx.simulate_mouse_move(panel_bounds.center(), None, Modifiers::none());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    let tooltip_surface_count = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            let background = cx.theme().colors().elevated_surface_background;
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| quad.background.as_solid() == Some(background))
+                .count()
+        })
+    };
+    let baseline_surface_count = tooltip_surface_count(cx);
+    let file_button = cx
+        .debug_bounds("ICON-FileAdd")
+        .expect("file button is visible");
+    let folder_button = cx
+        .debug_bounds("ICON-FolderAddThin")
+        .expect("folder button is visible");
+    let collapse_button = cx
+        .debug_bounds("ICON-CollapseAll")
+        .expect("collapse button is visible");
+    let title_bounds = cx
+        .debug_bounds("project_panel_entry_name_root")
+        .expect("project title is rendered");
+    let title_position = point(title_bounds.left() + px(3.), title_bounds.center().y);
+    let blank_position = point(title_bounds.left() + px(60.), title_bounds.center().y);
+
+    let row_background = |cx: &mut VisualTestContext| {
+        cx.update(|window, _| {
+            let position = blank_position.scale(window.scale_factor());
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| {
+                    !quad.background.is_transparent()
+                        && quad
+                            .bounds
+                            .intersect(&quad.content_mask.bounds)
+                            .contains(&position)
+                })
+                .max_by_key(|quad| quad.order)
+                .expect("root row background is painted")
+                .background
+                .as_solid()
+                .expect("root row background is solid")
+        })
+    };
+    cx.simulate_mouse_move(title_position, None, Modifiers::none());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let hovered_background = row_background(cx);
+    for position in [
+        blank_position,
+        file_button.center(),
+        folder_button.center(),
+        collapse_button.center(),
+        point(
+            (file_button.right() + folder_button.left()) / 2.,
+            file_button.center().y,
+        ),
+        point(
+            (folder_button.right() + collapse_button.left()) / 2.,
+            folder_button.center().y,
+        ),
+    ] {
+        cx.simulate_mouse_move(position, None, Modifiers::none());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            row_background(cx),
+            hovered_background,
+            "root row hover background stays consistent over controls at {position:?}"
+        );
+    }
+
+    for (left_button, right_button) in [
+        (file_button, folder_button),
+        (folder_button, collapse_button),
+    ] {
+        cx.simulate_mouse_move(title_position, None, Modifiers::none());
+        cx.executor().advance_clock(Duration::from_secs(2));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            tooltip_surface_count(cx) > baseline_surface_count,
+            "project tooltip is visible over its title"
+        );
+
+        cx.simulate_mouse_move(blank_position, None, Modifiers::none());
+        cx.executor().advance_clock(Duration::from_secs(2));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            tooltip_surface_count(cx),
+            baseline_surface_count,
+            "no project tooltip appears over blank space beside its name"
+        );
+
+        for vertical_position in [
+            left_button.top() - px(1.),
+            left_button.center().y,
+            left_button.bottom() + px(1.),
+        ] {
+            let gap_position = point(
+                (left_button.right() + right_button.left()) / 2.,
+                vertical_position,
+            );
+            cx.simulate_mouse_move(gap_position, None, Modifiers::none());
+            cx.executor().advance_clock(Duration::from_secs(2));
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            assert_eq!(
+                tooltip_surface_count(cx),
+                baseline_surface_count,
+                "no project tooltip appears in the controls area at {gap_position:?}"
+            );
+        }
+
+        cx.simulate_mouse_move(left_button.center(), None, Modifiers::none());
+        cx.executor().advance_clock(Duration::from_secs(2));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            tooltip_surface_count(cx) > baseline_surface_count,
+            "button tooltip remains available"
+        );
+
+        cx.simulate_mouse_move(panel_bounds.center(), None, Modifiers::none());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    let file_name_bounds = cx
+        .debug_bounds("project_panel_entry_name_file.txt")
+        .expect("file name is rendered");
+    cx.simulate_mouse_move(file_name_bounds.center(), None, Modifiers::none());
+    cx.executor().advance_clock(Duration::from_secs(2));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(tooltip_surface_count(cx) > baseline_surface_count);
+
+    let blank_position = point(
+        file_name_bounds.right() + px(20.),
+        file_name_bounds.center().y,
+    );
+    cx.simulate_mouse_move(blank_position, None, Modifiers::none());
+    cx.executor().advance_clock(Duration::from_secs(2));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        tooltip_surface_count(cx),
+        baseline_surface_count,
+        "file tooltip is restricted to its name"
+    );
+}
+
+#[gpui::test]
 async fn test_project_root_controls_hover_and_creation(cx: &mut TestAppContext) {
     init_test_with_editor(cx);
+    cx.update(|cx| {
+        cx.bind_keys([gpui::KeyBinding::new(
+            "escape",
+            Cancel,
+            Some("ProjectPanel"),
+        )])
+    });
     let fs = FakeFs::new(cx.executor());
     fs.insert_tree(path!("/root"), json!({ "selected": { "file.txt": "" } }))
         .await;
@@ -12402,6 +12574,7 @@ async fn test_project_root_controls_hover_and_creation(cx: &mut TestAppContext) 
         find_project_entry(&panel, "root/selected", cx).expect("selected directory exists");
     let selected_file =
         find_project_entry(&panel, "root/selected/file.txt", cx).expect("selected file exists");
+    let root_entry = find_project_entry(&panel, "root", cx).expect("root directory exists");
 
     cx.simulate_mouse_move(panel_bounds.center(), None, Modifiers::none());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -12419,38 +12592,61 @@ async fn test_project_root_controls_hover_and_creation(cx: &mut TestAppContext) 
     assert!(file_button.origin.x < folder_button.origin.x);
     assert!(folder_button.origin.x < collapse_button.origin.x);
 
-    for (entry_id, position, is_directory) in [
-        (selected_entry, file_button.center(), false),
-        (selected_entry, folder_button.center(), true),
-        (selected_file, file_button.center(), false),
-        (selected_file, folder_button.center(), true),
+    for (entry_id, destination) in [
+        (None, root_entry),
+        (Some(selected_entry), selected_entry),
+        (Some(selected_file), selected_entry),
     ] {
-        panel.update(cx, |panel, cx| {
-            let worktree_id = panel
-                .project
-                .read(cx)
-                .worktree_id_for_entry(entry_id, cx)
-                .expect("selected entry belongs to a worktree");
-            panel.selection = Some(SelectedEntry {
-                worktree_id,
-                entry_id,
+        for (position, is_directory) in [
+            (file_button.center(), false),
+            (folder_button.center(), true),
+        ] {
+            let original_selection = panel.update(cx, |panel, cx| {
+                panel.selection = entry_id.map(|entry_id| {
+                    let worktree_id = panel
+                        .project
+                        .read(cx)
+                        .worktree_id_for_entry(entry_id, cx)
+                        .expect("selected entry belongs to a worktree");
+                    SelectedEntry {
+                        worktree_id,
+                        entry_id,
+                    }
+                });
+                cx.notify();
+                panel.selection
             });
-            cx.notify();
-        });
-        cx.update(|window, cx| window.draw(cx).clear(cx));
-        cx.simulate_mouse_move(position, None, Modifiers::none());
-        cx.simulate_click(position, Modifiers::none());
-        panel.read_with(cx, |panel, _| {
-            let edit_state = panel
-                .state
-                .edit_state
-                .as_ref()
-                .expect("creation has started");
-            assert_eq!(edit_state.entry_id, selected_entry);
-            assert_eq!(edit_state.is_dir, is_directory);
-        });
-        panel.update_in(cx, |panel, window, cx| panel.cancel(&Cancel, window, cx));
-        cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.simulate_mouse_move(position, None, Modifiers::none());
+            cx.simulate_click(position, Modifiers::none());
+            panel.read_with(cx, |panel, _| {
+                let edit_state = panel
+                    .state
+                    .edit_state
+                    .as_ref()
+                    .expect("creation has started");
+                assert_eq!(edit_state.entry_id, destination, "selection: {entry_id:?}");
+                assert_eq!(edit_state.is_dir, is_directory);
+            });
+            cx.simulate_keystrokes("escape");
+            panel.read_with(cx, |panel, _| {
+                assert!(panel.state.edit_state.is_none());
+                assert_eq!(panel.selection, original_selection);
+            });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.simulate_click(file_button.center(), Modifiers::none());
+            panel.read_with(cx, |panel, _| {
+                let edit_state = panel
+                    .state
+                    .edit_state
+                    .as_ref()
+                    .expect("creation can restart");
+                assert_eq!(edit_state.entry_id, destination);
+                assert!(!edit_state.is_dir);
+            });
+            cx.simulate_keystrokes("escape");
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
     }
 
     cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::none());

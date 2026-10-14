@@ -2358,6 +2358,10 @@ impl ProjectPanel {
 
     fn discard_edit_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(edit_state) = self.state.edit_state.take() {
+            if edit_state.leaf_entry_id.is_none() {
+                self.selection = edit_state.previously_focused;
+            }
+            self.update_visible_entries_task.focus_filename_editor = false;
             self.state.temporarily_unfolded_pending_state = edit_state
                 .temporarily_unfolded
                 .and_then(|temporarily_unfolded_entry_id| {
@@ -2433,6 +2437,26 @@ impl ProjectPanel {
         self.add_entry(true, window, cx)
     }
 
+    fn add_entry_from_toolbar(
+        &mut self,
+        is_dir: bool,
+        worktree_id: WorktreeId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(selection) = self.selection.or_else(|| {
+            let worktree = self.project.read(cx).worktree_for_id(worktree_id, cx)?;
+            let root_entry_id = worktree.read(cx).root_entry()?.id;
+            Some(SelectedEntry {
+                worktree_id,
+                entry_id: root_entry_id,
+            })
+        }) else {
+            return;
+        };
+        self.add_entry_at(is_dir, selection, window, cx);
+    }
+
     fn add_entry(&mut self, is_dir: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some((worktree_id, entry_id)) = self
             .selection
@@ -2457,6 +2481,26 @@ impl ProjectPanel {
             return;
         };
 
+        self.add_entry_at(
+            is_dir,
+            SelectedEntry {
+                worktree_id,
+                entry_id,
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn add_entry_at(
+        &mut self,
+        is_dir: bool,
+        selection: SelectedEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let worktree_id = selection.worktree_id;
+        let entry_id = selection.entry_id;
         let directory_id;
         let new_entry_id = self.resolve_entry(entry_id);
         if let Some(worktree) = self.project.read(cx).worktree_for_id(worktree_id, cx) {
@@ -6180,26 +6224,18 @@ impl ProjectPanel {
                     .into_owned()
             });
 
+        let tooltip = tooltip_path.and_then(|path| {
+            let delay = match settings.title_tooltip_delay {
+                settings::ProjectPanelTitleTooltipDelay::Default => 1500,
+                settings::ProjectPanelTitleTooltipDelay::Custom(delay_ms) => delay_ms.0,
+                settings::ProjectPanelTitleTooltipDelay::Disabled => return None,
+            };
+            Some((path, delay))
+        });
         div()
             .id(id.clone())
             .relative()
             .group(GROUP_NAME)
-            .when_some(
-                tooltip_path.and_then(|path| {
-                    let delay = match settings.title_tooltip_delay {
-                        settings::ProjectPanelTitleTooltipDelay::Default => 1500,
-                        settings::ProjectPanelTitleTooltipDelay::Custom(delay_ms) => delay_ms.0,
-                        settings::ProjectPanelTitleTooltipDelay::Disabled => {
-                            return None;
-                        }
-                    };
-                    Some((path, delay))
-                }),
-                |this, (path, delay)| {
-                    this.tooltip_show_delay(Duration::from_millis(delay))
-                        .tooltip(Tooltip::text(path))
-                },
-            )
             .cursor_pointer()
             .rounded_none()
             .bg(bg_color)
@@ -6631,6 +6667,7 @@ impl ProjectPanel {
                                     .when(is_root, |this| {
                                         this.child(
                                             h_flex()
+                                                .id("project-panel-root-controls")
                                                 .gap_1()
                                                 .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                                     cx.stop_propagation();
@@ -6655,9 +6692,12 @@ impl ProjectPanel {
                                                                 )
                                                             })
                                                             .on_click(cx.listener(
-                                                                |this, _, window, cx| {
-                                                                    this.new_file(
-                                                                        &NewFile, window, cx,
+                                                                move |this, _, window, cx| {
+                                                                    this.add_entry_from_toolbar(
+                                                                        false,
+                                                                        worktree_id,
+                                                                        window,
+                                                                        cx,
                                                                     );
                                                                     cx.stop_propagation();
                                                                 },
@@ -6681,9 +6721,10 @@ impl ProjectPanel {
                                                                 )
                                                             })
                                                             .on_click(cx.listener(
-                                                                |this, _, window, cx| {
-                                                                    this.new_directory(
-                                                                        &NewDirectory,
+                                                                move |this, _, window, cx| {
+                                                                    this.add_entry_from_toolbar(
+                                                                        true,
+                                                                        worktree_id,
                                                                         window,
                                                                         cx,
                                                                     );
@@ -6809,40 +6850,60 @@ impl ProjectPanel {
                         }
                     })
                     .child(if show_editor {
-                        h_flex().h_6().w_full().child(self.filename_editor.clone())
+                        h_flex()
+                            .id("project-panel-entry-title")
+                            .h_6()
+                            .w_full()
+                            .child(self.filename_editor.clone())
                     } else {
                         h_flex()
+                            .id("project-panel-entry-title")
                             .h_6()
-                            .map(|this| match self.state.ancestors.get(&entry_id) {
-                                Some(folded_ancestors) => {
-                                    this.children(self.render_folder_elements(
-                                        folded_ancestors,
-                                        entry_id,
-                                        file_name,
-                                        path_style,
-                                        is_sticky,
-                                        kind.is_file(),
-                                        is_active || is_marked,
-                                        settings.drag_and_drop,
-                                        settings.bold_folder_labels,
-                                        item_colors.drag_over,
-                                        folded_directory_drag_target,
-                                        filename_text_color,
-                                        cx,
-                                    ))
-                                }
+                            .when(is_root, |this| this.flex_1().min_w_0())
+                            .child(
+                                h_flex()
+                                    .id("project-panel-entry-name")
+                                    .min_w_0()
+                                    .max_w_full()
+                                    .overflow_hidden()
+                                    .debug_selector(|| {
+                                        format!("project_panel_entry_name_{file_name}")
+                                    })
+                                    .when_some(tooltip, |this, (path, delay)| {
+                                        this.tooltip_show_delay(Duration::from_millis(delay))
+                                            .tooltip(Tooltip::text(path))
+                                    })
+                                    .map(|this| match self.state.ancestors.get(&entry_id) {
+                                        Some(folded_ancestors) => {
+                                            this.children(self.render_folder_elements(
+                                                folded_ancestors,
+                                                entry_id,
+                                                file_name,
+                                                path_style,
+                                                is_sticky,
+                                                kind.is_file(),
+                                                is_active || is_marked,
+                                                settings.drag_and_drop,
+                                                settings.bold_folder_labels,
+                                                item_colors.drag_over,
+                                                folded_directory_drag_target,
+                                                filename_text_color,
+                                                cx,
+                                            ))
+                                        }
 
-                                None => this.child(
-                                    Label::new(file_name)
-                                        .single_line()
-                                        .color(filename_text_color)
-                                        .when(
-                                            settings.bold_folder_labels && kind.is_dir(),
-                                            |this| this.weight(FontWeight::SEMIBOLD),
-                                        )
-                                        .into_any_element(),
-                                ),
-                            })
+                                        None => this.child(
+                                            Label::new(file_name)
+                                                .single_line()
+                                                .color(filename_text_color)
+                                                .when(
+                                                    settings.bold_folder_labels && kind.is_dir(),
+                                                    |this| this.weight(FontWeight::SEMIBOLD),
+                                                )
+                                                .into_any_element(),
+                                        ),
+                                    }),
+                            )
                     })
                     .on_secondary_mouse_down(cx.listener(
                         move |this, event: &MouseDownEvent, window, cx| {
