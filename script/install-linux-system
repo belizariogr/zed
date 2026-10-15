@@ -12,6 +12,11 @@ Builds Zed in release mode as the stable channel and installs it system-wide:
   \$PREFIX/lib/zed/zed-editor   Editor binary
   \$PREFIX/share/applications/  Desktop entry
   \$PREFIX/share/icons/         App icons
+  ~/.zed_server/zed-remote-server-*
+                               Remote development server (matches this build)
+
+If a remote server daemon is already running, it is stopped before the new
+binary is installed and started again afterward.
 
 Environment:
   PREFIX               Install prefix (default: /usr)
@@ -66,16 +71,156 @@ version="$(script/get-crate-version zed)"
 export RELEASE_VERSION="${version}"
 export ZED_UPDATE_EXPLANATION="Rebuild with ${root}/script/install-linux-system"
 
+git_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+if [[ -n "$git_sha" ]]; then
+  export ZED_COMMIT_SHA="$git_sha"
+fi
+
+# Filename must match AppVersion::load() in crates/release_channel, which the
+# SSH client uses when looking for ~/.zed_server/zed-remote-server-*.
+if [[ "$channel" == "dev" ]]; then
+  remote_version_label="build"
+else
+  remote_build_metadata="$channel"
+  if [[ -n "${GITHUB_RUN_NUMBER:-}" ]]; then
+    remote_build_metadata="${remote_build_metadata}.${GITHUB_RUN_NUMBER}"
+  fi
+  if [[ -n "$git_sha" ]]; then
+    remote_build_metadata="${remote_build_metadata}.${git_sha}"
+  fi
+  remote_version_label="${version}+${remote_build_metadata}"
+fi
+
+server_dir="${HOME}/.zed_server"
+server_binary_name="zed-remote-server-${channel}-${remote_version_label}"
+server_dest="${server_dir}/${server_binary_name}"
+data_home="${XDG_DATA_HOME:-${HOME}/.local/share}"
+server_state_dir="${data_home}/zed/server_state"
+server_logs_dir="${data_home}/zed/logs"
+
+strip_remote_server() {
+  local src="$1"
+  local dst="$2"
+  if command -v llvm-objcopy >/dev/null 2>&1 && llvm-objcopy --strip-debug --discard-all "$src" "$dst"; then
+    :
+  elif command -v objcopy >/dev/null 2>&1 && objcopy --strip-debug --discard-all "$src" "$dst"; then
+    :
+  elif command -v strip >/dev/null 2>&1 && cp "$src" "$dst" && strip --strip-debug "$dst"; then
+    :
+  else
+    cp "$src" "$dst"
+  fi
+  chmod 755 "$dst"
+}
+
+collect_remote_server_pids() {
+  local pid exe
+  shopt -s nullglob
+  for pid in /proc/[0-9]*; do
+    pid="${pid#/proc/}"
+    exe="$(readlink "/proc/${pid}/exe" 2>/dev/null || true)"
+    if [[ "$exe" == *"/zed-remote-server-"* ]]; then
+      printf '%s\n' "$pid"
+    fi
+  done
+  shopt -u nullglob
+}
+
+collect_running_server_identifiers() {
+  local pid_file identifier pid
+  if [[ ! -d "$server_state_dir" ]]; then
+    return 0
+  fi
+  shopt -s nullglob
+  for pid_file in "$server_state_dir"/*/server.pid; do
+    identifier="$(basename "$(dirname "$pid_file")")"
+    pid="$(tr -d '[:space:]' <"$pid_file")"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+      printf '%s\n' "$identifier"
+    fi
+  done
+  shopt -u nullglob
+}
+
+stop_remote_servers() {
+  local pids=()
+  local pid still=()
+  while IFS= read -r pid; do
+    if [[ -n "$pid" ]]; then
+      pids+=("$pid")
+    fi
+  done < <(collect_remote_server_pids)
+  if ((${#pids[@]} == 0)); then
+    return 0
+  fi
+
+  echo "==> Stopping ${#pids[@]} running remote server process(es)"
+  kill "${pids[@]}" 2>/dev/null || true
+
+  local attempt
+  for attempt in {1..15}; do
+    still=()
+    for pid in "${pids[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        still+=("$pid")
+      fi
+    done
+    if ((${#still[@]} == 0)); then
+      return 0
+    fi
+    pids=("${still[@]}")
+    sleep 0.2
+  done
+
+  echo "==> Remote server did not exit, sending SIGKILL"
+  kill -9 "${pids[@]}" 2>/dev/null || true
+}
+
+restart_remote_servers() {
+  local identifier ident_dir log_file
+  if ((${#restart_identifiers[@]} == 0)); then
+    echo "==> Remote server was running; reconnect from the client to start the new binary"
+    return 0
+  fi
+
+  echo "==> Restarting remote server for ${#restart_identifiers[@]} session(s)"
+  mkdir -p "$server_logs_dir"
+  for identifier in "${restart_identifiers[@]}"; do
+    ident_dir="${server_state_dir}/${identifier}"
+    mkdir -p "$ident_dir"
+    log_file="${server_logs_dir}/server-${identifier}.log"
+    rm -f \
+      "${ident_dir}/stdin.sock" \
+      "${ident_dir}/stdout.sock" \
+      "${ident_dir}/stderr.sock" \
+      "${ident_dir}/server.pid"
+    nohup "$server_dest" run \
+      --log-file "$log_file" \
+      --pid-file "${ident_dir}/server.pid" \
+      --stdin-socket "${ident_dir}/stdin.sock" \
+      --stdout-socket "${ident_dir}/stdout.sock" \
+      --stderr-socket "${ident_dir}/stderr.sock" \
+      >/dev/null 2>&1 &
+    disown || true
+  done
+}
+
 echo "==> Building Zed ${version} (${channel}) in release mode"
 cargo build --release --package zed --package cli
+# Separate invocation avoids feature unification pulling extra dynamic libs
+# into remote_server (same reason as script/bundle-linux).
+echo "==> Building remote server in release mode"
+cargo build --release --package remote_server
 
 cli_bin="${CARGO_TARGET_DIR:-target}/release/cli"
 editor_bin="${CARGO_TARGET_DIR:-target}/release/zed"
+remote_server_bin="${CARGO_TARGET_DIR:-target}/release/remote_server"
 
-if [[ ! -x "$cli_bin" || ! -x "$editor_bin" ]]; then
+if [[ ! -x "$cli_bin" || ! -x "$editor_bin" || ! -x "$remote_server_bin" ]]; then
   echo "error: expected release binaries were not produced:" >&2
   echo "  ${cli_bin}" >&2
   echo "  ${editor_bin}" >&2
+  echo "  ${remote_server_bin}" >&2
   exit 1
 fi
 
@@ -120,6 +265,9 @@ fi
 temp_dir="$(mktemp -d)"
 trap 'rm -rf "$temp_dir"' EXIT
 
+stripped_remote_server="${temp_dir}/remote_server"
+strip_remote_server "$remote_server_bin" "$stripped_remote_server"
+
 desktop_file="${temp_dir}/${app_id}.desktop"
 export DO_STARTUP_NOTIFY="true"
 export APP_CLI="zed"
@@ -130,6 +278,18 @@ export APP_NAME="$app_name"
 envsubst <"crates/zed/resources/zed.desktop.in" >"$desktop_file"
 chmod 755 "$desktop_file"
 
+restart_identifiers=()
+while IFS= read -r identifier; do
+  if [[ -n "$identifier" ]]; then
+    restart_identifiers+=("$identifier")
+  fi
+done < <(collect_running_server_identifiers)
+remote_server_was_running=false
+if ((${#restart_identifiers[@]} > 0)) || [[ -n "$(collect_remote_server_pids)" ]]; then
+  remote_server_was_running=true
+  stop_remote_servers
+fi
+
 echo "==> Installing into ${PREFIX} (requires privileges)"
 "$SUDO" install -Dm755 "$cli_bin" "${PREFIX}/bin/zed"
 "$SUDO" install -Dm755 "$editor_bin" "${PREFIX}/lib/zed/zed-editor"
@@ -137,6 +297,10 @@ echo "==> Installing into ${PREFIX} (requires privileges)"
 "$SUDO" install -Dm644 "$icon_src" "$icon_dst_512"
 "$SUDO" install -Dm644 "$icon_src" "$icon_dst_512_app_id"
 "$SUDO" install -Dm644 "$icon_src_2x" "$icon_dst_1024"
+
+echo "==> Installing remote server to ${server_dest}"
+install -Dm755 "$stripped_remote_server" "$server_dest"
+"$server_dest" version >/dev/null
 
 # Remove desktop entries left over from other channels so only one shortcut remains.
 for stale_id in dev.zed.Zed dev.zed.Zed-Dev dev.zed.Zed-Preview dev.zed.Zed-Nightly; do
@@ -152,12 +316,18 @@ if command -v update-desktop-database >/dev/null 2>&1; then
   "$SUDO" update-desktop-database "${PREFIX}/share/applications" >/dev/null 2>&1 || true
 fi
 
+if [[ "$remote_server_was_running" == true ]]; then
+  restart_remote_servers
+fi
+
 echo
 echo "Installed:"
 echo "  ${PREFIX}/bin/zed"
 echo "  ${PREFIX}/lib/zed/zed-editor"
+echo "  ${server_dest}"
 echo "  ${PREFIX}/share/applications/${app_id}.desktop"
 echo "  ${icon_dst_512}"
 echo
 echo "Verify with: zed --version"
+echo "Remote server: ${server_binary_name}"
 echo "Run with: zed"

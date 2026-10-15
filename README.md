@@ -38,7 +38,7 @@ Customizations implemented in this fork:
 ### Installation
 
 - **`script/install-macos`** — builds the fork in release mode as stable by default, preserves macOS bundle icons and document associations, and installs the app and CLI
-- **`script/install-linux-system`** — system-wide Linux install (CLI in `/usr/bin`, editor under `/usr/lib/zed`), stable channel by default, and absolute desktop icon path
+- **`script/install-linux-system`** — system-wide Linux install (CLI in `/usr/bin`, editor under `/usr/lib/zed`), stable channel by default, absolute desktop icon path, and remote development server in `~/.zed_server` (restarts it if it is already running)
 
 ---
 
