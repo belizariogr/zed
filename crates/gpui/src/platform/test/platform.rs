@@ -44,6 +44,7 @@ pub(crate) struct TestPlatform {
     pub(crate) prompts: RefCell<TestPrompts>,
     screen_capture_sources: RefCell<Vec<TestScreenCaptureSource>>,
     pub opened_url: RefCell<Option<String>>,
+    pub(crate) recent_documents: RefCell<Vec<PathBuf>>,
     pub(crate) system_notifications: RefCell<TestSystemNotifications>,
     pub text_system: Arc<dyn PlatformTextSystem>,
     pub expect_restart:
@@ -221,6 +222,7 @@ impl TestPlatform {
             idle_sleep_prevention_fails: Cell::new(false),
             weak: weak.clone(),
             opened_url: Default::default(),
+            recent_documents: Default::default(),
             system_notifications: Default::default(),
             text_system,
             headless_renderer_factory,
@@ -707,7 +709,11 @@ impl Platform for TestPlatform {
 
     fn set_dock_menu(&self, _menu: Vec<crate::MenuItem>, _keymap: &Keymap) {}
 
-    fn add_recent_document(&self, _paths: &Path) {}
+    fn add_recent_document(&self, path: &Path) {
+        let mut recent_documents = self.recent_documents.borrow_mut();
+        recent_documents.retain(|recent| recent != path);
+        recent_documents.push(path.to_path_buf());
+    }
 
     fn on_app_menu_action(&self, _callback: Box<dyn FnMut(&dyn crate::Action)>) {}
 

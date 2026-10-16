@@ -431,6 +431,11 @@ impl TestAppContext {
         self.test_platform.opened_url.borrow().clone()
     }
 
+    /// Returns the recent document paths, ordered from oldest to newest.
+    pub fn recent_documents(&self) -> Vec<PathBuf> {
+        self.test_platform.recent_documents.borrow().clone()
+    }
+
     /// Returns the application identity configured during this test.
     pub fn app_identity(&self) -> Option<(SharedString, SharedString)> {
         self.test_platform.app_identity()
