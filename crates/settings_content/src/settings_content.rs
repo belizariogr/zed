@@ -643,7 +643,8 @@ pub struct DebuggerSettingsContent {
     ///
     /// Default: true
     pub save_breakpoints: Option<bool>,
-    /// Whether to hide the debug panel when the last debug session ends.
+    /// Whether to hide the debug panel when the last debug session ends
+    /// and omit its open state from saved workspace layouts.
     ///
     /// Default: false
     pub auto_close_on_session_end: Option<bool>,

@@ -39,6 +39,66 @@ use workspace::pane_group::SplitDirection;
 use workspace::{Item, dock::Panel, move_active_item};
 
 #[gpui::test]
+async fn test_auto_close_prevents_restoring_debugger_visibility(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+
+    for auto_close in [false, true] {
+        for restore_before_panel in [false, true] {
+            cx.update(|cx| {
+                cx.update_global::<settings::SettingsStore, _>(|store, cx| {
+                    store.update_user_settings(cx, |settings| {
+                        settings
+                            .debugger
+                            .get_or_insert_default()
+                            .auto_close_on_session_end = Some(auto_close);
+                    });
+                });
+            });
+            let project = Project::test(fs.clone(), [], cx).await;
+            let window = cx
+                .add_window(|window, cx| workspace::MultiWorkspace::test_new(project, window, cx));
+            let workspace = window
+                .read_with(cx, |multi, _| multi.workspace().clone())
+                .expect("workspace exists");
+            let cx = &mut VisualTestContext::from_window(*window, cx);
+            let mut saved = workspace.update_in(cx, |workspace, window, cx| {
+                workspace.capture_dock_state(window, cx)
+            });
+            saved.bottom.visible = true;
+            saved.bottom.active_panel = Some(DebugPanel::persistent_name().into());
+            saved.bottom.zoom = true;
+            if restore_before_panel {
+                workspace.update_in(cx, |workspace, window, cx| {
+                    workspace.set_dock_structure(saved.clone(), window, cx)
+                });
+            }
+            let panel = workspace
+                .update_in(cx, |_, window, cx| {
+                    cx.spawn_in(window, async move |workspace, cx| {
+                        DebugPanel::load(workspace, cx).await
+                    })
+                })
+                .await
+                .expect("debugger panel loads");
+            workspace.update_in(cx, |workspace, window, cx| {
+                workspace.add_panel(panel.clone(), window, cx);
+                if !restore_before_panel {
+                    workspace.set_dock_structure(saved, window, cx);
+                }
+            });
+            cx.run_until_parked();
+            workspace.update_in(cx, |workspace, window, cx| {
+                assert_eq!(workspace.bottom_dock().read(cx).is_open(), !auto_close);
+                assert_eq!(panel.read(cx).is_zoomed(window, cx), !auto_close);
+                workspace.open_panel::<DebugPanel>(window, cx);
+                assert!(workspace.bottom_dock().read(cx).is_open());
+            });
+        }
+    }
+}
+
+#[gpui::test]
 async fn test_auto_close_on_session_end(cx: &mut TestAppContext) {
     init_test(cx);
     let fs = FakeFs::new(cx.executor());

@@ -6990,7 +6990,7 @@ fn panels_page() -> SettingsPage {
             SettingsPageItem::SectionHeader("Debugger Panel"),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Auto Close on Session End",
-                description: "Hide the debugger panel when the last debug session ends. Show the project panel if Auto Open on Project Open is enabled. Keeps the console output and watch expressions available.",
+                description: "Hide the debugger panel when the last debug session ends and keep it closed when reopening a workspace. Show the project panel if Auto Open on Project Open is enabled. Keeps the console output and watch expressions available.",
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("debugger.auto_close_on_session_end"),

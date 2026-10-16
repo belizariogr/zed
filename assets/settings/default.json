@@ -2999,7 +2999,7 @@
   "debugger": {
     "stepping_granularity": "line",
     "save_breakpoints": true,
-    // Hide the debug panel when the last debug session ends.
+    // Hide the debug panel when the last debug session ends and do not restore it as open.
     "auto_close_on_session_end": false,
     "timeout": 2000,
     "dock": "bottom",

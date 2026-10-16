@@ -7717,7 +7717,21 @@ impl Workspace {
             window: &mut Window,
             cx: &mut App,
         ) -> DockStructure {
-            this.capture_dock_state(window, cx)
+            let mut serialized = this.capture_dock_state(window, cx);
+            for (dock, data) in [
+                (&this.left_dock, &mut serialized.left),
+                (&this.bottom_dock, &mut serialized.bottom),
+                (&this.right_dock, &mut serialized.right),
+            ] {
+                if dock
+                    .read(cx)
+                    .active_panel()
+                    .is_some_and(|panel| !panel.persist_visibility(cx))
+                {
+                    *data = DockData::default();
+                }
+            }
+            serialized
         }
 
         match self.workspace_location(cx) {
@@ -20012,6 +20026,71 @@ mod tests {
             workspace.open_url_or_file("nonexistent.txt", None, window, cx);
         });
         assert_eq!(cx.opened_url(), Some("nonexistent.txt".to_string()));
+    }
+
+    #[gpui::test]
+    async fn test_panel_visibility_omitted_from_persisted_layouts(cx: &mut gpui::TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/project"), json!({"file.txt": ""}))
+            .await;
+
+        for empty_workspace in [false, true] {
+            let roots: Vec<&Path> = if empty_workspace {
+                Vec::new()
+            } else {
+                vec![path!("/project").as_ref()]
+            };
+            let project = Project::test(fs.clone(), roots, cx).await;
+            let (workspace, cx) =
+                cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+            let database = cx.update(|_, cx| WorkspaceDb::global(cx));
+            let workspace_id = database
+                .next_id()
+                .await
+                .expect("workspace id should be allocated");
+            let panel = workspace.update_in(cx, |workspace, window, cx| {
+                workspace.set_database_id(workspace_id);
+                let panel = cx.new(|cx| TestPanel::new(DockPosition::Left, 100, cx));
+                workspace.add_panel(panel.clone(), window, cx);
+                workspace.open_panel::<TestPanel>(window, cx);
+                panel
+            });
+            panel.update(cx, |_, cx| cx.emit(PanelEvent::ZoomIn));
+            cx.run_until_parked();
+
+            for persist_visibility in [true, false] {
+                panel.update(cx, |panel, _| panel.persist_visibility = persist_visibility);
+                workspace
+                    .update_in(cx, |workspace, window, cx| {
+                        workspace.flush_serialization(window, cx)
+                    })
+                    .await;
+                let docks = if empty_workspace {
+                    cx.update(|_, cx| {
+                        persistence::read_default_dock_state(&db::kvp::KeyValueStore::global(cx))
+                    })
+                    .expect("default layout should be saved")
+                } else {
+                    database
+                        .workspace_for_id(workspace_id)
+                        .expect("workspace should be saved")
+                        .docks
+                };
+                assert_eq!(docks.left.visible, persist_visibility);
+                assert_eq!(docks.left.zoom, persist_visibility);
+                assert_eq!(
+                    docks.left.active_panel.as_deref(),
+                    persist_visibility.then_some(TestPanel::persistent_name())
+                );
+                workspace.update_in(cx, |workspace, window, cx| {
+                    assert!(workspace.left_dock().read(cx).is_open());
+                    let captured = workspace.capture_dock_state(window, cx);
+                    assert!(captured.left.visible);
+                    assert!(captured.left.zoom);
+                });
+            }
+        }
     }
 
     #[gpui::test]

@@ -84,6 +84,10 @@ pub trait Panel: Focusable + EventEmitter<PanelEvent> + Render + Sized {
     fn starts_open_on_restore(&self, _window: &Window, _cx: &App) -> bool {
         false
     }
+    /// Whether saved layouts should retain this panel's visibility and zoom state.
+    fn persist_visibility(&self, _cx: &App) -> bool {
+        true
+    }
     fn set_zoomed(&mut self, _zoomed: bool, _window: &mut Window, _cx: &mut Context<Self>) {}
     fn set_active(&mut self, _active: bool, _window: &mut Window, _cx: &mut Context<Self>) {}
     fn pane(&self) -> Option<Entity<Pane>> {
@@ -116,6 +120,7 @@ pub trait PanelHandle: Send + Sync {
     fn set_position(&self, position: DockPosition, window: &mut Window, cx: &mut App);
     fn is_zoomed(&self, window: &Window, cx: &App) -> bool;
     fn starts_open_on_restore(&self, window: &Window, cx: &App) -> bool;
+    fn persist_visibility(&self, cx: &App) -> bool;
     fn set_zoomed(&self, zoomed: bool, window: &mut Window, cx: &mut App);
     fn set_active(&self, active: bool, window: &mut Window, cx: &mut App);
     fn remote_id(&self) -> Option<proto::PanelId>;
@@ -178,6 +183,10 @@ where
 
     fn starts_open_on_restore(&self, window: &Window, cx: &App) -> bool {
         self.read(cx).starts_open_on_restore(window, cx)
+    }
+
+    fn persist_visibility(&self, cx: &App) -> bool {
+        self.read(cx).persist_visibility(cx)
     }
 
     fn position_is_valid(&self, position: DockPosition, cx: &App) -> bool {
@@ -891,13 +900,20 @@ impl Dock {
             return;
         }
 
-        if let Some(active_panel) = serialized
-            .active_panel
-            .as_deref()
-            .filter(|_| serialized.visible)
-            && let Some(idx) = self.panel_index_for_persistent_name(active_panel, cx)
+        if let Some(active_panel) = serialized.active_panel.as_deref()
+            && let Some(index) = self.panel_index_for_persistent_name(active_panel, cx)
         {
-            self.activate_panel_internal(idx, window, cx);
+            if self
+                .panel_entries
+                .get(index)
+                .is_some_and(|entry| !entry.panel.persist_visibility(cx))
+            {
+                self.set_open_internal(false, window, cx);
+                return;
+            }
+            if serialized.visible {
+                self.activate_panel_internal(index, window, cx);
+            }
         }
         if serialized.zoom
             && let Some(panel) = self.active_panel()
@@ -1629,6 +1645,7 @@ pub mod test {
         pub position: DockPosition,
         pub zoomed: bool,
         pub active: bool,
+        pub persist_visibility: bool,
         pub focus_handle: FocusHandle,
         pub activation_focus_handle: Option<FocusHandle>,
         pub default_size: Pixels,
@@ -1645,6 +1662,7 @@ pub mod test {
                 position,
                 zoomed: false,
                 active: false,
+                persist_visibility: true,
                 focus_handle: cx.focus_handle(),
                 activation_focus_handle: None,
                 default_size: px(300.),
@@ -1688,6 +1706,10 @@ pub mod test {
     }
 
     impl Panel for TestPanel {
+        fn persist_visibility(&self, _: &App) -> bool {
+            self.persist_visibility
+        }
+
         fn activation_focus_handle(&self, cx: &App) -> FocusHandle {
             self.activation_focus_handle
                 .clone()

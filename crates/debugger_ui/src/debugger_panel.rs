@@ -1563,6 +1563,10 @@ impl Focusable for DebugPanel {
 }
 
 impl Panel for DebugPanel {
+    fn persist_visibility(&self, cx: &App) -> bool {
+        !DebuggerSettings::get_global(cx).auto_close_on_session_end
+    }
+
     fn persistent_name() -> &'static str {
         "DebugPanel"
     }
