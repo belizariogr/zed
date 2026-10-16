@@ -292,6 +292,15 @@ async fn test_console_stays_in_terminal_across_debug_restarts(cx: &mut TestAppCo
         })
         .expect("console hidden");
 
+    workspace
+        .update(cx, |_multi, window, cx| {
+            let editor = cx.new(|cx| Editor::single_line(window, cx));
+            terminal_pane.update(cx, |pane, cx| {
+                pane.add_item(Box::new(editor), true, false, None, window, cx);
+            });
+        })
+        .expect("terminal tab");
+
     let second_session = start_debug_session(&workspace, cx, |_| {}).expect("session restarts");
     let second_session_id = second_session.read_with(cx, |session, _| session.session_id());
     cx.run_until_parked();
@@ -303,6 +312,12 @@ async fn test_console_stays_in_terminal_across_debug_restarts(cx: &mut TestAppCo
             assert_eq!(
                 consoles[0].read(cx).running_session_id(cx),
                 Some(second_session_id)
+            );
+            assert!(
+                terminal_pane
+                    .read(cx)
+                    .active_item()
+                    .is_some_and(|item| is_console_item(item.as_ref(), cx))
             );
             let running = multi.workspace().update(cx, |workspace, cx| {
                 workspace

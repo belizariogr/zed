@@ -1217,7 +1217,7 @@ impl RunningState {
         self.remove_external_consoles(window, cx);
         let sub_view = self.create_sub_view(DebuggerPaneItem::Console, &pane, cx);
         pane.update(cx, |pane, cx| {
-            pane.add_item_inner(sub_view, false, false, false, None, window, cx);
+            pane.add_item_inner(sub_view, false, false, true, None, window, cx);
         });
         true
     }
