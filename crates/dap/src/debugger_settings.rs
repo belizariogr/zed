@@ -11,6 +11,7 @@ pub struct DebuggerSettings {
     ///
     /// Default: true
     pub save_breakpoints: bool,
+    pub auto_close_on_session_end: bool,
     /// Whether to show the debug button in the status bar.
     ///
     /// Default: true
@@ -41,6 +42,7 @@ impl Settings for DebuggerSettings {
                 content.stepping_granularity.unwrap(),
             ),
             save_breakpoints: content.save_breakpoints.unwrap(),
+            auto_close_on_session_end: content.auto_close_on_session_end.unwrap_or(false),
             button: content.button.unwrap(),
             timeout: content.timeout.unwrap(),
             log_dap_communications: content.log_dap_communications.unwrap(),

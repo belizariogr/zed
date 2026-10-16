@@ -5550,7 +5550,7 @@ fn window_and_layout_page() -> SettingsPage {
 }
 
 fn panels_page() -> SettingsPage {
-    fn project_panel_section() -> [SettingsPageItem; 30] {
+    fn project_panel_section() -> [SettingsPageItem; 31] {
         [
             SettingsPageItem::SectionHeader("Project Panel"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -5860,6 +5860,22 @@ fn panels_page() -> SettingsPage {
                             .project_panel
                             .get_or_insert_default()
                             .starts_open = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Auto Open on Project Open",
+                description: "Show the project panel whenever a project opens, even if it was previously hidden. Overrides Starts Open and the saved layout.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("project_panel.auto_open_on_project_open"),
+                    pick: |settings_content| {
+                        settings_content.project_panel.as_ref()?.auto_open_on_project_open.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content.project_panel.get_or_insert_default().auto_open_on_project_open = value;
                     },
                 }),
                 metadata: None,
@@ -6969,9 +6985,32 @@ fn panels_page() -> SettingsPage {
         ]
     }
 
-    fn debugger_panel_section() -> [SettingsPageItem; 2] {
+    fn debugger_panel_section() -> [SettingsPageItem; 3] {
         [
             SettingsPageItem::SectionHeader("Debugger Panel"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Auto Close on Session End",
+                description: "Hide the debugger panel when the last debug session ends. Show the project panel if Auto Open on Project Open is enabled. Keeps the console output and watch expressions available.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("debugger.auto_close_on_session_end"),
+                    pick: |settings_content| {
+                        settings_content
+                            .debugger
+                            .as_ref()?
+                            .auto_close_on_session_end
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .debugger
+                            .get_or_insert_default()
+                            .auto_close_on_session_end = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Debugger Panel Dock",
                 description: "The dock position of the debug panel.",

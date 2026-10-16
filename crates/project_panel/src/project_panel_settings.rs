@@ -27,6 +27,7 @@ pub struct ProjectPanelSettings {
     pub auto_fold_dirs: bool,
     pub bold_folder_labels: bool,
     pub starts_open: bool,
+    pub auto_open_on_project_open: bool,
     pub scrollbar: ScrollbarSettings,
     pub show_diagnostics: ShowDiagnostics,
     pub hide_root: bool,
@@ -122,6 +123,7 @@ impl Settings for ProjectPanelSettings {
             auto_fold_dirs: project_panel.auto_fold_dirs.unwrap(),
             bold_folder_labels: project_panel.bold_folder_labels.unwrap(),
             starts_open: project_panel.starts_open.unwrap(),
+            auto_open_on_project_open: project_panel.auto_open_on_project_open.unwrap_or(false),
             scrollbar: {
                 let scrollbar = project_panel.scrollbar.unwrap();
                 ScrollbarSettings {

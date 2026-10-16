@@ -18,7 +18,7 @@ use editor::{
     ActiveDebugLine, Editor, EditorMode, MultiBuffer,
     actions::{self},
 };
-use gpui::{AppContext, BackgroundExecutor, TestAppContext, VisualTestContext};
+use gpui::{AppContext, BackgroundExecutor, BorrowAppContext, TestAppContext, VisualTestContext};
 use project::{
     FakeFs, Project,
     debugger::session::{ThreadId, ThreadStatus},
@@ -37,6 +37,171 @@ use util::{path, rel_path::rel_path};
 use workspace::item::SaveOptions;
 use workspace::pane_group::SplitDirection;
 use workspace::{Item, dock::Panel, move_active_item};
+
+#[gpui::test]
+async fn test_auto_close_on_session_end(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/project"), json!({"main.rs": "fn main() {}"}))
+        .await;
+    let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+    let workspace = init_test_workspace(&project, cx).await;
+    let cx = &mut VisualTestContext::from_window(*workspace, cx);
+
+    for auto_close in [false, true] {
+        cx.update(|_, cx| {
+            cx.update_global::<settings::SettingsStore, _>(|store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings
+                        .debugger
+                        .get_or_insert_default()
+                        .auto_close_on_session_end = Some(auto_close);
+                });
+            });
+        });
+        let first_session =
+            start_debug_session(&workspace, cx, |_| {}).expect("first session should start");
+        let second_session =
+            start_debug_session(&workspace, cx, |_| {}).expect("second session should start");
+        for (session, expected_open) in [(first_session, true), (second_session, !auto_close)] {
+            let client = session.update(cx, |session, _| {
+                session.adapter_client().expect("running adapter")
+            });
+            client
+                .fake_event(dap::messages::Events::Terminated(None))
+                .await;
+            cx.run_until_parked();
+            workspace
+                .read_with(cx, |multi, cx| {
+                    let workspace = multi.workspace().read(cx);
+                    let panel = workspace
+                        .panel::<DebugPanel>(cx)
+                        .expect("debugger panel exists");
+                    assert_eq!(workspace.bottom_dock().read(cx).is_open(), expected_open);
+                    assert!(panel.read(cx).active_session().is_some());
+                })
+                .expect("workspace exists");
+        }
+    }
+
+    start_debug_session(&workspace, cx, |_| {}).expect("session should start");
+    workspace
+        .update(cx, |multi, window, cx| {
+            multi.workspace().update(cx, |workspace, cx| {
+                workspace.open_panel::<TerminalPanel>(window, cx);
+            });
+        })
+        .expect("workspace exists");
+    let session = project
+        .read_with(cx, |project, cx| {
+            project.dap_store().read(cx).sessions().next().cloned()
+        })
+        .expect("session exists");
+    session.update(cx, |session, cx| session.shutdown(cx)).await;
+    cx.run_until_parked();
+    workspace
+        .read_with(cx, |multi, cx| {
+            let workspace = multi.workspace().read(cx);
+            assert!(workspace.bottom_dock().read(cx).is_open());
+            assert_eq!(
+                workspace
+                    .bottom_dock()
+                    .read(cx)
+                    .visible_panel()
+                    .map(|panel| panel.persistent_name()),
+                Some(TerminalPanel::persistent_name())
+            );
+        })
+        .expect("workspace exists");
+}
+
+#[gpui::test]
+async fn test_auto_close_on_session_end_reveals_project_panel(cx: &mut TestAppContext) {
+    init_test(cx);
+    cx.update(project_panel::init);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/project"), json!({"main.rs": "fn main() {}"}))
+        .await;
+    let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+    let window = init_test_workspace(&project, cx).await;
+    let workspace = window
+        .read_with(cx, |multi, _| multi.workspace().clone())
+        .expect("workspace exists");
+    let cx = &mut VisualTestContext::from_window(*window, cx);
+    let panel = workspace
+        .update_in(cx, |_, window, cx| {
+            cx.spawn_in(window, async move |workspace, cx| {
+                project_panel::ProjectPanel::load(workspace, cx.clone()).await
+            })
+        })
+        .await
+        .expect("project panel loads");
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.add_panel(panel.clone(), window, cx)
+    });
+
+    for (auto_open, auto_close, initially_visible, same_dock) in [
+        (false, true, false, false),
+        (true, false, false, false),
+        (true, true, false, false),
+        (true, true, true, false),
+        (true, true, false, true),
+    ] {
+        cx.update(|_, cx| {
+            cx.update_global::<settings::SettingsStore, _>(|store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    let project_panel = settings.project_panel.get_or_insert_default();
+                    project_panel.auto_open_on_project_open = Some(auto_open);
+                    project_panel.dock = Some(settings::DockSide::Left);
+                    let debugger = settings.debugger.get_or_insert_default();
+                    debugger.auto_close_on_session_end = Some(auto_close);
+                    debugger.dock = Some(if same_dock {
+                        settings::DockPosition::Left
+                    } else {
+                        settings::DockPosition::Bottom
+                    });
+                });
+            });
+        });
+        cx.run_until_parked();
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.close_all_docks(window, cx);
+            if initially_visible {
+                workspace.open_panel::<project_panel::ProjectPanel>(window, cx);
+            }
+        });
+        let first_session = start_debug_session(&window, cx, |_| {}).expect("first session starts");
+        let second_session =
+            start_debug_session(&window, cx, |_| {}).expect("second session starts");
+        for (session, last_session) in [(first_session, false), (second_session, true)] {
+            let client = session.read_with(cx, |session, _| {
+                session.adapter_client().expect("running adapter")
+            });
+            client
+                .fake_event(dap::messages::Events::Terminated(None))
+                .await;
+            cx.run_until_parked();
+            workspace.update_in(cx, |workspace, window, cx| {
+                let project_visible = workspace
+                    .left_dock()
+                    .read(cx)
+                    .visible_panel()
+                    .is_some_and(|visible_panel| visible_panel.panel_id() == panel.entity_id());
+                assert_eq!(
+                    project_visible,
+                    initially_visible || (last_session && auto_close && auto_open)
+                );
+                let debugger = workspace.panel::<DebugPanel>(cx).expect("debugger exists");
+                let debugger_visible = workspace
+                    .dock_at_position(debugger.read(cx).position(window, cx))
+                    .read(cx)
+                    .visible_panel()
+                    .is_some_and(|visible_panel| visible_panel.panel_id() == debugger.entity_id());
+                assert_eq!(debugger_visible, !(last_session && auto_close));
+            });
+        }
+    }
+}
 
 #[gpui::test]
 async fn test_browser_navigates_after_child_configuration(cx: &mut TestAppContext) {

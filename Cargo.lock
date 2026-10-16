@@ -4792,6 +4792,8 @@ dependencies = [
  "picker",
  "pretty_assertions",
  "project",
+ "project_panel",
+ "remote_connection",
  "rpc",
  "schemars 1.0.4",
  "search",

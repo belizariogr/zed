@@ -925,6 +925,7 @@ impl VsCodeSettings {
                 _ => None,
             }),
             starts_open: None,
+            auto_open_on_project_open: None,
             sticky_scroll: None,
             auto_open: None,
             diagnostic_badges: None,

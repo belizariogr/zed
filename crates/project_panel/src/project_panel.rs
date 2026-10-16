@@ -786,8 +786,23 @@ impl ProjectPanel {
                         this.update_visible_entries(None, false, false, window, cx);
                         cx.notify();
                     }
+                    project::Event::WorktreeAdded(worktree_id) => {
+                        this.update_visible_entries(None, false, false, window, cx);
+                        if ProjectPanelSettings::get_global(cx).auto_open_on_project_open
+                            && project
+                                .read(cx)
+                                .worktree_for_id(*worktree_id, cx)
+                                .is_some_and(|worktree| {
+                                    let worktree = worktree.read(cx);
+                                    worktree.is_visible()
+                                        && worktree.root_entry().is_some_and(|entry| entry.is_dir())
+                                })
+                        {
+                            cx.emit(PanelEvent::Activate);
+                        }
+                        cx.notify();
+                    }
                     project::Event::WorktreeUpdatedEntries(_, _)
-                    | project::Event::WorktreeAdded(_)
                     | project::Event::WorktreeOrderChanged => {
                         this.update_visible_entries(None, false, false, window, cx);
                         cx.notify();
@@ -8421,7 +8436,8 @@ impl Panel for ProjectPanel {
     }
 
     fn starts_open(&self, _: &Window, cx: &App) -> bool {
-        if !ProjectPanelSettings::get_global(cx).starts_open {
+        let settings = ProjectPanelSettings::get_global(cx);
+        if !settings.starts_open && !settings.auto_open_on_project_open {
             return false;
         }
 
@@ -8431,6 +8447,11 @@ impl Panel for ProjectPanel {
                 .root_entry()
                 .is_some_and(|entry| entry.is_dir())
         })
+    }
+
+    fn starts_open_on_restore(&self, window: &Window, cx: &App) -> bool {
+        ProjectPanelSettings::get_global(cx).auto_open_on_project_open
+            && self.starts_open(window, cx)
     }
 
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {

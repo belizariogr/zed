@@ -30,6 +30,102 @@ use workspace::{
 };
 
 #[gpui::test]
+async fn test_auto_open_on_project_open_overrides_saved_visibility(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/project"), json!({"file.txt": ""}))
+        .await;
+    for auto_open in [false, true] {
+        for restore_before_panel in [false, true] {
+            cx.update(|cx| {
+                let settings = *ProjectPanelSettings::get_global(cx);
+                ProjectPanelSettings::override_global(
+                    ProjectPanelSettings {
+                        starts_open: false,
+                        auto_open_on_project_open: auto_open,
+                        ..settings
+                    },
+                    cx,
+                );
+            });
+            let project = Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
+            let (workspace, cx) =
+                cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+            workspace.update_in(cx, |workspace, window, cx| {
+                let mut docks = workspace.capture_dock_state(window, cx);
+                docks.left.visible = false;
+                docks.right.visible = false;
+                if restore_before_panel {
+                    workspace.set_dock_structure(docks.clone(), window, cx);
+                }
+                let panel = ProjectPanel::new(workspace, window, cx);
+                let position = panel.read(cx).position(window, cx);
+                workspace.add_panel(panel.clone(), window, cx);
+                if !restore_before_panel {
+                    workspace.set_dock_structure(docks, window, cx);
+                }
+                let dock = workspace.dock_at_position(position);
+                assert_eq!(dock.read(cx).is_open(), auto_open);
+                if auto_open {
+                    assert_eq!(
+                        dock.read(cx).visible_panel().map(|panel| panel.panel_id()),
+                        Some(panel.entity_id())
+                    );
+                }
+                dock.update(cx, |dock, cx| dock.set_open(false, window, cx));
+                assert!(!dock.read(cx).is_open());
+            });
+        }
+    }
+}
+
+#[gpui::test]
+async fn test_auto_open_on_project_open_when_adding_folder(cx: &mut TestAppContext) {
+    init_test(cx);
+    cx.update(|cx| {
+        let settings = *ProjectPanelSettings::get_global(cx);
+        ProjectPanelSettings::override_global(
+            ProjectPanelSettings {
+                starts_open: false,
+                auto_open_on_project_open: true,
+                ..settings
+            },
+            cx,
+        );
+    });
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/project"), json!({"file.txt": ""}))
+        .await;
+    let project = Project::test(fs, [], cx).await;
+    let (workspace, cx) =
+        cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+    let panel = workspace.update_in(cx, |workspace, window, cx| {
+        let panel = ProjectPanel::new(workspace, window, cx);
+        workspace.add_panel(panel.clone(), window, cx);
+        assert!(!panel.read(cx).starts_open(window, cx));
+        panel
+    });
+    project
+        .update(cx, |project, cx| {
+            project.find_or_create_worktree(path!("/project"), true, cx)
+        })
+        .await
+        .expect("folder should open");
+    cx.run_until_parked();
+    workspace.update_in(cx, |workspace, window, cx| {
+        let position = panel.read(cx).position(window, cx);
+        assert_eq!(
+            workspace
+                .dock_at_position(position)
+                .read(cx)
+                .visible_panel()
+                .map(|panel| panel.panel_id()),
+            Some(panel.entity_id())
+        );
+    });
+}
+
+#[gpui::test]
 async fn test_visible_list(cx: &mut gpui::TestAppContext) {
     init_test(cx);
 

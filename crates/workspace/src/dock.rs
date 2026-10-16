@@ -80,6 +80,10 @@ pub trait Panel: Focusable + EventEmitter<PanelEvent> + Render + Sized {
     fn starts_open(&self, _window: &Window, _cx: &App) -> bool {
         false
     }
+    /// Whether opening a workspace should show this panel even when its saved dock was hidden.
+    fn starts_open_on_restore(&self, _window: &Window, _cx: &App) -> bool {
+        false
+    }
     fn set_zoomed(&mut self, _zoomed: bool, _window: &mut Window, _cx: &mut Context<Self>) {}
     fn set_active(&mut self, _active: bool, _window: &mut Window, _cx: &mut Context<Self>) {}
     fn pane(&self) -> Option<Entity<Pane>> {
@@ -111,6 +115,7 @@ pub trait PanelHandle: Send + Sync {
     fn position_is_valid(&self, position: DockPosition, cx: &App) -> bool;
     fn set_position(&self, position: DockPosition, window: &mut Window, cx: &mut App);
     fn is_zoomed(&self, window: &Window, cx: &App) -> bool;
+    fn starts_open_on_restore(&self, window: &Window, cx: &App) -> bool;
     fn set_zoomed(&self, zoomed: bool, window: &mut Window, cx: &mut App);
     fn set_active(&self, active: bool, window: &mut Window, cx: &mut App);
     fn remote_id(&self) -> Option<proto::PanelId>;
@@ -169,6 +174,10 @@ where
 
     fn position(&self, window: &Window, cx: &App) -> DockPosition {
         self.read(cx).position(window, cx)
+    }
+
+    fn starts_open_on_restore(&self, window: &Window, cx: &App) -> bool {
+        self.read(cx).starts_open_on_restore(window, cx)
     }
 
     fn position_is_valid(&self, position: DockPosition, cx: &App) -> bool {
@@ -872,6 +881,16 @@ impl Dock {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(index) = self
+            .panel_entries
+            .iter()
+            .position(|entry| entry.panel.starts_open_on_restore(window, cx))
+        {
+            self.activate_panel_internal(index, window, cx);
+            self.set_open_internal(true, window, cx);
+            return;
+        }
+
         if let Some(active_panel) = serialized
             .active_panel
             .as_deref()

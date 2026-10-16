@@ -927,6 +927,8 @@
     "auto_reveal_entries": true,
     // Whether the project panel should open on startup.
     "starts_open": true,
+    // Show the project panel whenever a project opens, overriding its saved visibility.
+    "auto_open_on_project_open": false,
     // Whether to fold directories automatically and show compact folders
     // (e.g. "a/b/c" ) when a directory has only one subdirectory inside.
     "auto_fold_dirs": true,
@@ -2997,6 +2999,8 @@
   "debugger": {
     "stepping_granularity": "line",
     "save_breakpoints": true,
+    // Hide the debug panel when the last debug session ends.
+    "auto_close_on_session_end": false,
     "timeout": 2000,
     "dock": "bottom",
     "log_dap_communications": true,

@@ -29,6 +29,7 @@ use language::Buffer;
 use project::debugger::session::{Session, SessionQuirks, SessionState, SessionStateEvent};
 use project::{DebugScenarioContext, Fs, ProjectPath, TaskSourceKind, WorktreeId};
 use project::{Project, debugger::session::ThreadStatus};
+use project_panel::{ProjectPanel, project_panel_settings::ProjectPanelSettings};
 use rpc::proto::{self};
 use settings::Settings;
 use std::sync::Arc;
@@ -132,6 +133,44 @@ impl DebugPanel {
                 debug_scenario_scheduled_last: true,
             }
         })
+    }
+
+    fn close_after_session_end(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !DebuggerSettings::get_global(cx).auto_close_on_session_end
+            || self
+                .project
+                .read(cx)
+                .dap_store()
+                .read(cx)
+                .sessions()
+                .any(|session| !session.read(cx).is_terminated())
+        {
+            return;
+        }
+
+        cx.emit(PanelEvent::Close);
+        let workspace = self.workspace.clone();
+        window.defer(cx, move |window, cx| {
+            if !ProjectPanelSettings::get_global(cx).auto_open_on_project_open {
+                return;
+            }
+            workspace
+                .update(cx, |workspace, cx| {
+                    let Some(panel) = workspace.panel::<ProjectPanel>(cx) else {
+                        return;
+                    };
+                    let position = panel.read(cx).position(window, cx);
+                    let visible = workspace
+                        .dock_at_position(position)
+                        .read(cx)
+                        .visible_panel()
+                        .is_some_and(|visible_panel| visible_panel.panel_id() == panel.entity_id());
+                    if !visible || workspace.zoomed_item().is_some() {
+                        workspace.reveal_panel::<ProjectPanel>(window, cx);
+                    }
+                })
+                .log_err();
+        });
     }
 
     pub(crate) fn focus_active_item(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1436,6 +1475,9 @@ async fn register_session_inner(
             move |this, session, event: &SessionStateEvent, window, cx| match event {
                 SessionStateEvent::Restart => {
                     this.handle_restart_request(session.clone(), window, cx);
+                }
+                SessionStateEvent::Shutdown { .. } => {
+                    cx.defer_in(window, DebugPanel::close_after_session_end);
                 }
                 SessionStateEvent::SpawnChildSession { request } => {
                     this.handle_start_debugging_request(request, session.clone(), window, cx);

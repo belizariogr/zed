@@ -869,6 +869,10 @@ pub struct ProjectPanelSettingsContent {
     ///
     /// Default: true
     pub starts_open: Option<bool>,
+    /// Whether to show the project panel whenever a project opens, overriding its saved visibility.
+    ///
+    /// Default: false
+    pub auto_open_on_project_open: Option<bool>,
     /// Scrollbar-related settings
     pub scrollbar: Option<ProjectPanelScrollbarSettingsContent>,
     /// Which files containing diagnostic errors/warnings to mark in the project panel.
