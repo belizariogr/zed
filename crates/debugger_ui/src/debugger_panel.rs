@@ -930,8 +930,9 @@ impl DebugPanel {
                                             }),
                                     )
                                     .child(
-                                        IconButton::new("debug-stop", IconName::Power)
+                                        IconButton::new("debug-stop", IconName::Stop)
                                             .icon_size(IconSize::Small)
+                                            .icon_color(Color::Error)
                                             .on_click(window.listener_for(
                                                 running_state,
                                                 |this, _, _window, cx| {
