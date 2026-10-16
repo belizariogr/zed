@@ -18,7 +18,10 @@ use editor::{
     ActiveDebugLine, Editor, EditorMode, MultiBuffer,
     actions::{self},
 };
-use gpui::{AppContext, BackgroundExecutor, BorrowAppContext, TestAppContext, VisualTestContext};
+use gpui::{
+    App, AppContext, BackgroundExecutor, BorrowAppContext, Entity, TestAppContext,
+    VisualTestContext,
+};
 use project::{
     FakeFs, Project,
     debugger::session::{ThreadId, ThreadStatus},
@@ -36,7 +39,7 @@ use tests::{active_debug_session_panel, init_test, init_test_workspace};
 use util::{path, rel_path::rel_path};
 use workspace::item::SaveOptions;
 use workspace::pane_group::SplitDirection;
-use workspace::{Item, dock::Panel, move_active_item};
+use workspace::{Item, Pane, dock::Panel, move_active_item, move_item};
 
 #[gpui::test]
 async fn test_auto_close_prevents_restoring_debugger_visibility(cx: &mut TestAppContext) {
@@ -173,6 +176,166 @@ async fn test_auto_close_on_session_end(cx: &mut TestAppContext) {
             );
         })
         .expect("workspace exists");
+}
+
+#[gpui::test]
+async fn test_console_stays_in_terminal_across_debug_restarts(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/project"), json!({"main.rs": "fn main() {}"}))
+        .await;
+    let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+    let workspace = init_test_workspace(&project, cx).await;
+    let cx = &mut VisualTestContext::from_window(*workspace, cx);
+
+    cx.update(|_, cx| {
+        cx.update_global::<settings::SettingsStore, _>(|store, cx| {
+            store.update_user_settings(cx, |settings| {
+                settings
+                    .debugger
+                    .get_or_insert_default()
+                    .auto_close_on_session_end = Some(true);
+            });
+        });
+    });
+
+    let first_session = start_debug_session(&workspace, cx, |_| {}).expect("session starts");
+    let (source_pane, console_item_id, terminal_pane) = workspace
+        .update(cx, |multi, _window, cx| {
+            multi.workspace().update(cx, |workspace, cx| {
+                let running = workspace
+                    .panel::<DebugPanel>(cx)
+                    .expect("debug panel")
+                    .update(cx, |panel, cx| {
+                        panel.running_state(cx).expect("running state")
+                    });
+                let source_pane = running
+                    .read(cx)
+                    .debugger_panes()
+                    .into_iter()
+                    .find(|pane| pane_console_count(pane, cx) > 0)
+                    .expect("console starts in the debugger");
+                let console_item_id = source_pane
+                    .read(cx)
+                    .items()
+                    .find(|item| is_console_item(item.as_ref(), cx))
+                    .map(|item| item.item_id())
+                    .expect("console item");
+                let terminal_pane = workspace
+                    .panel::<TerminalPanel>(cx)
+                    .expect("terminal panel")
+                    .read(cx)
+                    .panes()[0]
+                    .clone();
+                (source_pane, console_item_id, terminal_pane)
+            })
+        })
+        .expect("workspace");
+
+    workspace
+        .update(cx, |_multi, window, cx| {
+            move_item(
+                &source_pane,
+                &terminal_pane,
+                console_item_id,
+                0,
+                false,
+                window,
+                cx,
+            );
+        })
+        .expect("move console");
+    cx.run_until_parked();
+
+    workspace
+        .update(cx, |multi, _window, cx| {
+            let running = multi.workspace().update(cx, |workspace, cx| {
+                workspace
+                    .panel::<DebugPanel>(cx)
+                    .unwrap()
+                    .update(cx, |panel, cx| panel.running_state(cx).unwrap())
+            });
+            assert!(matches!(
+                running.read(cx).console_anchor(),
+                crate::persistence::ConsoleAnchor::Terminal { .. }
+            ));
+            assert_eq!(pane_console_count(&terminal_pane, cx), 1);
+            assert!(
+                running
+                    .read(cx)
+                    .debugger_panes()
+                    .iter()
+                    .all(|pane| pane_console_count(pane, cx) == 0)
+            );
+        })
+        .expect("console moved");
+
+    let client = first_session.update(cx, |session, _| session.adapter_client().unwrap());
+    client
+        .fake_event(dap::messages::Events::Terminated(None))
+        .await;
+    cx.run_until_parked();
+
+    workspace
+        .update(cx, |multi, _window, cx| {
+            assert_eq!(pane_console_count(&terminal_pane, cx), 0);
+            let running = multi.workspace().update(cx, |workspace, cx| {
+                workspace
+                    .panel::<DebugPanel>(cx)
+                    .unwrap()
+                    .update(cx, |panel, cx| panel.running_state(cx).unwrap())
+            });
+            assert!(matches!(
+                running.read(cx).console_anchor(),
+                crate::persistence::ConsoleAnchor::Terminal { .. }
+            ));
+        })
+        .expect("console hidden");
+
+    let second_session = start_debug_session(&workspace, cx, |_| {}).expect("session restarts");
+    let second_session_id = second_session.read_with(cx, |session, _| session.session_id());
+    cx.run_until_parked();
+
+    workspace
+        .update(cx, |multi, _window, cx| {
+            let consoles = console_views(&terminal_pane, cx);
+            assert_eq!(consoles.len(), 1);
+            assert_eq!(
+                consoles[0].read(cx).running_session_id(cx),
+                Some(second_session_id)
+            );
+            let running = multi.workspace().update(cx, |workspace, cx| {
+                workspace
+                    .panel::<DebugPanel>(cx)
+                    .unwrap()
+                    .update(cx, |panel, cx| panel.running_state(cx).unwrap())
+            });
+            assert!(
+                running
+                    .read(cx)
+                    .debugger_panes()
+                    .iter()
+                    .all(|pane| pane_console_count(pane, cx) == 0)
+            );
+        })
+        .expect("console restored");
+}
+
+fn is_console_item(item: &dyn workspace::ItemHandle, cx: &App) -> bool {
+    item.downcast::<crate::session::running::SubView>()
+        .is_some_and(|view| view.read(cx).view_kind() == DebuggerPaneItem::Console)
+}
+
+fn pane_console_count(pane: &Entity<Pane>, cx: &App) -> usize {
+    console_views(pane, cx).len()
+}
+
+fn console_views(pane: &Entity<Pane>, cx: &App) -> Vec<Entity<crate::session::running::SubView>> {
+    pane.read(cx)
+        .items()
+        .filter_map(|item| item.downcast::<crate::session::running::SubView>())
+        .filter(|view| view.read(cx).view_kind() == DebuggerPaneItem::Console)
+        .collect()
 }
 
 #[gpui::test]

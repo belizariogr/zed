@@ -1,4 +1,4 @@
-use crate::persistence::DebuggerPaneItem;
+use crate::persistence::{ConsoleAnchor, DebuggerPaneItem};
 use crate::session::DebugSession;
 use crate::session::running::RunningState;
 use crate::session::running::breakpoint_list::BreakpointList;
@@ -34,6 +34,7 @@ use rpc::proto::{self};
 use settings::Settings;
 use std::sync::Arc;
 use task::{DebugScenario, SharedTaskContext};
+use terminal_view::terminal_panel::TerminalPanel;
 
 use ui::{
     ButtonLike, ContextMenu, Divider, ElevationIndex, PopoverMenu, PopoverMenuHandle, SplitButton,
@@ -76,6 +77,7 @@ pub struct DebugPanel {
     _subscriptions: [Subscription; 2],
     breakpoint_list: Entity<BreakpointList>,
     pending_watch_list: Entity<PendingWatchList>,
+    console_anchor: Option<ConsoleAnchor>,
 }
 
 impl DebugPanel {
@@ -131,6 +133,7 @@ impl DebugPanel {
                 is_zoomed: false,
                 _subscriptions: [focus_subscription, breakpoint_subscription],
                 debug_scenario_scheduled_last: true,
+                console_anchor: None,
             }
         })
     }
@@ -146,6 +149,14 @@ impl DebugPanel {
                 .any(|session| !session.read(cx).is_terminated())
         {
             return;
+        }
+
+        for session in self.sessions_with_children.keys() {
+            session.update(cx, |session, cx| {
+                session.running_state().update(cx, |state, cx| {
+                    state.hide_external_console(window, cx);
+                });
+            });
         }
 
         cx.emit(PanelEvent::Close);
@@ -171,6 +182,10 @@ impl DebugPanel {
                 })
                 .log_err();
         });
+    }
+
+    pub(crate) fn set_console_anchor(&mut self, anchor: ConsoleAnchor) {
+        self.console_anchor = Some(anchor);
     }
 
     pub(crate) fn focus_active_item(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -414,8 +429,16 @@ impl DebugPanel {
 
             this.workspace.clone()
         })?;
+        let console_in_terminal = this
+            .read_with(cx, |this, _| {
+                matches!(this.console_anchor, Some(ConsoleAnchor::Terminal { .. }))
+            })
+            .unwrap_or(false);
         workspace.update_in(cx, |workspace, window, cx| {
             workspace.focus_panel::<Self>(window, cx);
+            if console_in_terminal {
+                workspace.open_panel::<TerminalPanel>(window, cx);
+            }
         })?;
         Ok(debug_session)
     }
@@ -547,7 +570,7 @@ impl DebugPanel {
         };
         session.update(cx, |this, cx| {
             this.running_state().update(cx, |this, cx| {
-                this.serialize_layout(window, cx);
+                this.serialize_layout(cx);
             });
         });
         let session_id = session.update(cx, |this, cx| this.session_id(cx));
@@ -1511,6 +1534,17 @@ async fn register_session_inner(
                 .is_terminated()
         });
 
+        let layout_anchor = serialized_layout
+            .as_ref()
+            .map(|layout| layout.console_anchor)
+            .unwrap_or_default();
+        let console_anchor = if parent_session.is_none() {
+            let anchor = this.console_anchor.unwrap_or(layout_anchor);
+            this.console_anchor = Some(anchor);
+            anchor
+        } else {
+            ConsoleAnchor::Debugger
+        };
         let debug_session = DebugSession::running(
             this.project.clone(),
             this.workspace.clone(),
@@ -1519,6 +1553,7 @@ async fn register_session_inner(
                 .map(|p| p.read(cx).running_state().read(cx).debug_terminal.clone()),
             session,
             serialized_layout,
+            console_anchor,
             this.position(window, cx).axis(),
             window,
             cx,

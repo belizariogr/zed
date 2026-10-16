@@ -98,10 +98,28 @@ impl From<DebuggerPaneItem> for SharedString {
     }
 }
 
+/// Where the debugger console is shown across sessions.
+///
+/// The console starts inside the debugger panel. Dragging it into the terminal
+/// panel or the editor keeps that destination for later sessions.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub(crate) enum ConsoleAnchor {
+    #[default]
+    Debugger,
+    Terminal {
+        pane_index: usize,
+    },
+    Center {
+        pane_index: usize,
+    },
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct SerializedLayout {
     pub(crate) panes: SerializedPaneLayout,
     pub(crate) dock_axis: Axis,
+    #[serde(default)]
+    pub(crate) console_anchor: ConsoleAnchor,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -139,11 +157,13 @@ pub(crate) async fn serialize_pane_layout(
 pub(crate) fn build_serialized_layout(
     pane_group: &Member,
     dock_axis: Axis,
+    console_anchor: ConsoleAnchor,
     cx: &App,
 ) -> SerializedLayout {
     SerializedLayout {
         dock_axis,
         panes: build_serialized_pane_layout(pane_group, cx),
+        console_anchor,
     }
 }
 

@@ -1,6 +1,9 @@
 pub mod running;
 
-use crate::{persistence::SerializedLayout, session::running::DebugTerminal};
+use crate::{
+    persistence::{ConsoleAnchor, SerializedLayout},
+    session::running::DebugTerminal,
+};
 use dap::client::SessionId;
 use gpui::{App, Axis, Entity, EventEmitter, FocusHandle, Focusable, Task, WeakEntity};
 use project::debugger::session::Session;
@@ -27,6 +30,7 @@ impl DebugSession {
         parent_terminal: Option<Entity<DebugTerminal>>,
         session: Entity<Session>,
         serialized_layout: Option<SerializedLayout>,
+        console_anchor: ConsoleAnchor,
         dock_axis: Axis,
         window: &mut Window,
         cx: &mut App,
@@ -38,6 +42,7 @@ impl DebugSession {
                 workspace.clone(),
                 parent_terminal,
                 serialized_layout,
+                console_anchor,
                 dock_axis,
                 window,
                 cx,

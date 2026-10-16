@@ -16,7 +16,7 @@ use crate::{
     ToggleExpandItem,
     attach_modal::{AttachModal, ModalIntent},
     new_process_modal::resolve_path,
-    persistence::{self, DebuggerPaneItem, SerializedLayout},
+    persistence::{self, ConsoleAnchor, DebuggerPaneItem, SerializedLayout},
     session::running::memory_view::MemoryView,
 };
 
@@ -50,7 +50,7 @@ use task::{
     BuildTaskDefinition, DebugScenario, SharedTaskContext, Shell, ShellBuilder, SpawnInTerminal,
     TaskContext, ZedDebugConfig, substitute_variables_in_str,
 };
-use terminal_view::TerminalView;
+use terminal_view::{TerminalView, terminal_panel::TerminalPanel};
 use ui::{
     FluentBuilder, IntoElement, Render, StatefulInteractiveElement, Tab, Tooltip, VisibleOnHover,
     VisualContext, prelude::*,
@@ -85,6 +85,8 @@ pub struct RunningState {
     active_pane: Entity<Pane>,
     pane_close_subscriptions: HashMap<EntityId, Subscription>,
     dock_axis: Axis,
+    console_anchor: ConsoleAnchor,
+    applying_console_anchor: bool,
     _schedule_serialize: Option<Task<()>>,
     pub(crate) scenario: Option<DebugScenario>,
     pub(crate) scenario_context: Option<DebugScenarioContext>,
@@ -288,6 +290,13 @@ impl SubView {
     pub(crate) fn view_kind(&self) -> DebuggerPaneItem {
         self.kind
     }
+
+    #[cfg(test)]
+    pub(crate) fn running_session_id(&self, cx: &App) -> Option<dap::client::SessionId> {
+        self.running_state
+            .read_with(cx, |running, _| running.session_id())
+            .ok()
+    }
     pub(crate) fn with_indicator(&mut self, indicator: Box<dyn Fn(&App) -> bool>) {
         self.show_indicator = indicator;
     }
@@ -302,6 +311,7 @@ impl SubView {
         self.host_pane = host_pane;
     }
 }
+
 impl Focusable for SubView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.item_focus_handle.clone()
@@ -319,6 +329,27 @@ impl Item for SubView {
 
     fn tab_tooltip_text(&self, _: &App) -> Option<SharedString> {
         Some(self.kind.tab_tooltip())
+    }
+
+    fn pane_changed(&mut self, _new_pane_id: EntityId, cx: &mut Context<Self>) {
+        if self.kind != DebuggerPaneItem::Console {
+            return;
+        }
+        // Adding the console runs inside `RunningState::new`, so record the
+        // destination on a later turn instead of updating that entity now.
+        let item_id = cx.entity_id();
+        let running = self.running_state.clone();
+        cx.spawn(async move |this, cx| {
+            let pane = running
+                .update(cx, |running, cx| running.note_console_host(item_id, cx))
+                .ok()
+                .flatten();
+            if let Some(pane) = pane {
+                this.update(cx, |this, _| this.host_pane = pane.downgrade())
+                    .ok();
+            }
+        })
+        .detach();
     }
 
     fn tab_content(
@@ -863,6 +894,7 @@ impl RunningState {
         workspace: WeakEntity<Workspace>,
         parent_terminal: Option<Entity<DebugTerminal>>,
         serialized_pane_layout: Option<SerializedLayout>,
+        console_anchor: ConsoleAnchor,
         dock_axis: Axis,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -996,8 +1028,8 @@ impl RunningState {
                 }
                 cx.notify()
             }),
-            cx.on_focus_out(&focus_handle, window, |this, _, window, cx| {
-                this.serialize_layout(window, cx);
+            cx.on_focus_out(&focus_handle, window, |this, _, _window, cx| {
+                this.serialize_layout(cx);
             }),
             cx.subscribe(
                 &session,
@@ -1052,7 +1084,7 @@ impl RunningState {
         };
         let active_pane = panes.first_pane();
 
-        Self {
+        let mut this = Self {
             memory_view,
             session,
             workspace,
@@ -1073,10 +1105,208 @@ impl RunningState {
             pane_close_subscriptions,
             debug_terminal,
             dock_axis,
+            console_anchor,
+            applying_console_anchor: true,
             _schedule_serialize: None,
             scenario: None,
             scenario_context: None,
+        };
+        this.relocate_console(window, cx);
+        this.applying_console_anchor = false;
+        this
+    }
+
+    fn note_console_host(
+        &mut self,
+        console_item_id: EntityId,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<Pane>> {
+        let workspace = self.workspace.upgrade()?;
+        let pane = workspace.read(cx).pane_for_item_id(console_item_id)?;
+        let anchor = self.anchor_for_pane(&pane, workspace.read(cx), cx);
+        self.publish_console_anchor(anchor, cx);
+        Some(pane)
+    }
+
+    fn anchor_for_pane(
+        &self,
+        pane: &Entity<Pane>,
+        workspace: &Workspace,
+        cx: &App,
+    ) -> ConsoleAnchor {
+        if self
+            .panes
+            .panes()
+            .iter()
+            .any(|candidate| candidate.entity_id() == pane.entity_id())
+        {
+            return ConsoleAnchor::Debugger;
         }
+        if let Some(terminal) = workspace.panel::<TerminalPanel>(cx) {
+            let panes = terminal.read(cx).panes();
+            if let Some(pane_index) = panes
+                .iter()
+                .position(|candidate| candidate.entity_id() == pane.entity_id())
+            {
+                return ConsoleAnchor::Terminal { pane_index };
+            }
+        }
+        if let Some(pane_index) = workspace
+            .panes()
+            .iter()
+            .position(|candidate| candidate.entity_id() == pane.entity_id())
+        {
+            return ConsoleAnchor::Center { pane_index };
+        }
+        self.console_anchor
+    }
+
+    fn publish_console_anchor(&mut self, anchor: ConsoleAnchor, cx: &mut Context<Self>) {
+        self.console_anchor = anchor;
+        let workspace = self.workspace.clone();
+        // Startup runs inside the debug panel update, so defer that write.
+        if self.applying_console_anchor {
+            cx.spawn(async move |_this, cx| {
+                workspace
+                    .update(cx, |workspace, cx| {
+                        if let Some(panel) = workspace.panel::<crate::DebugPanel>(cx) {
+                            panel.update(cx, |panel, _| panel.set_console_anchor(anchor));
+                        }
+                    })
+                    .ok();
+            })
+            .detach();
+        } else {
+            workspace
+                .update(cx, |workspace, cx| {
+                    if let Some(panel) = workspace.panel::<crate::DebugPanel>(cx) {
+                        panel.update(cx, |panel, _| panel.set_console_anchor(anchor));
+                    }
+                })
+                .ok();
+        }
+        self.serialize_layout(cx);
+    }
+
+    fn relocate_console(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.console_anchor, ConsoleAnchor::Debugger) {
+            self.ensure_pane_item(DebuggerPaneItem::Console, window, cx);
+            return;
+        }
+
+        self.remove_pane_item(DebuggerPaneItem::Console, window, cx);
+        if self.show_external_console(window, cx) {
+            return;
+        }
+
+        self.publish_console_anchor(ConsoleAnchor::Debugger, cx);
+        self.ensure_pane_item(DebuggerPaneItem::Console, window, cx);
+    }
+
+    fn show_external_console(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(pane) = self.resolve_external_pane(cx) else {
+            return false;
+        };
+        let workspace = self.workspace.upgrade();
+        if let Some(workspace) = workspace.as_ref() {
+            let anchor = self.anchor_for_pane(&pane, workspace.read(cx), cx);
+            if !matches!(anchor, ConsoleAnchor::Debugger) {
+                self.publish_console_anchor(anchor, cx);
+            }
+        }
+        self.remove_external_consoles(window, cx);
+        let sub_view = self.create_sub_view(DebuggerPaneItem::Console, &pane, cx);
+        pane.update(cx, |pane, cx| {
+            pane.add_item_inner(sub_view, false, false, false, None, window, cx);
+        });
+        true
+    }
+
+    pub(crate) fn hide_external_console(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.console_anchor, ConsoleAnchor::Debugger) {
+            return;
+        }
+        self.remove_external_consoles(window, cx);
+    }
+
+    fn remove_external_consoles(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for pane in self.external_panes(cx) {
+            let item_ids = pane.read(cx).items().filter_map(|item| {
+                item.downcast::<SubView>().and_then(|view| {
+                    (view.read(cx).kind == DebuggerPaneItem::Console).then(|| item.item_id())
+                })
+            });
+            let item_ids = item_ids.collect::<Vec<_>>();
+            if item_ids.is_empty() {
+                continue;
+            }
+            pane.update(cx, |pane, cx| {
+                for item_id in item_ids {
+                    pane.remove_item(item_id, false, true, window, cx);
+                }
+            });
+        }
+    }
+
+    fn resolve_external_pane(&self, cx: &App) -> Option<Entity<Pane>> {
+        if let Some(pane) = self.external_console_panes(cx).into_iter().next() {
+            return Some(pane);
+        }
+        let workspace = self.workspace.upgrade()?;
+        let workspace = workspace.read(cx);
+        match self.console_anchor {
+            ConsoleAnchor::Debugger => None,
+            ConsoleAnchor::Terminal { pane_index } => {
+                let panes = workspace.panel::<TerminalPanel>(cx)?.read(cx).panes();
+                panes
+                    .get(pane_index)
+                    .or(panes.last())
+                    .map(|pane| (*pane).clone())
+            }
+            ConsoleAnchor::Center { pane_index } => {
+                let panes = workspace.panes();
+                panes
+                    .get(pane_index)
+                    .cloned()
+                    .or_else(|| panes.last().cloned())
+            }
+        }
+    }
+
+    fn external_panes(&self, cx: &App) -> Vec<Entity<Pane>> {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return Vec::new();
+        };
+        let workspace = workspace.read(cx);
+        let mut panes = Vec::new();
+        if let Some(terminal) = workspace.panel::<TerminalPanel>(cx) {
+            panes.extend(terminal.read(cx).panes().into_iter().cloned());
+        }
+        panes.extend(workspace.panes().iter().cloned());
+        panes
+    }
+
+    fn external_console_panes(&self, cx: &App) -> Vec<Entity<Pane>> {
+        self.external_panes(cx)
+            .into_iter()
+            .filter(|pane| {
+                pane.read(cx).items().any(|item| {
+                    item.downcast::<SubView>()
+                        .is_some_and(|view| view.read(cx).kind == DebuggerPaneItem::Console)
+                })
+            })
+            .collect()
+    }
+
+    fn reveal_console_host(&self, window: &mut Window, cx: &mut App) {
+        if !matches!(self.console_anchor, ConsoleAnchor::Terminal { .. }) {
+            return;
+        }
+        self.workspace
+            .update(cx, |workspace, cx| {
+                workspace.open_panel::<TerminalPanel>(window, cx);
+            })
+            .ok();
     }
 
     pub(crate) fn remove_pane_item(
@@ -1605,13 +1835,25 @@ impl RunningState {
                     pane_item_status.insert(view.read(cx).kind, true);
                 });
         });
+        if !matches!(self.console_anchor, ConsoleAnchor::Debugger) {
+            pane_item_status.insert(DebuggerPaneItem::Console, true);
+        }
 
         pane_item_status
     }
 
-    pub(crate) fn serialize_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn console_is_in_debugger(&self, cx: &App) -> bool {
+        self.panes.panes().iter().any(|pane| {
+            pane.read(cx).items().any(|item| {
+                item.downcast::<SubView>()
+                    .is_some_and(|view| view.read(cx).kind == DebuggerPaneItem::Console)
+            })
+        })
+    }
+
+    pub(crate) fn serialize_layout(&mut self, cx: &mut Context<Self>) {
         if self._schedule_serialize.is_none() {
-            self._schedule_serialize = Some(cx.spawn_in(window, async move |this, cx| {
+            self._schedule_serialize = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor()
                     .timer(Duration::from_millis(100))
                     .await;
@@ -1624,6 +1866,7 @@ impl RunningState {
                             persistence::build_serialized_layout(
                                 &this.panes.root,
                                 this.dock_axis,
+                                this.console_anchor,
                                 cx,
                             ),
                         )
@@ -1654,16 +1897,23 @@ impl RunningState {
         this: &mut RunningState,
         source_pane: &Entity<Pane>,
         event: &Event,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<RunningState>,
     ) {
-        this.serialize_layout(window, cx);
+        this.serialize_layout(cx);
         match event {
             Event::AddItem { item } => {
                 if let Some(sub_view) = item.downcast::<SubView>() {
+                    let kind = sub_view.read(cx).view_kind();
                     sub_view.update(cx, |sub_view, _| {
                         sub_view.set_host_pane(source_pane.downgrade());
                     });
+                    if kind == DebuggerPaneItem::Console
+                        && !this.applying_console_anchor
+                        && this.console_is_in_debugger(cx)
+                    {
+                        this.publish_console_anchor(ConsoleAnchor::Debugger, cx);
+                    }
                 }
             }
             Event::Remove { .. } => {
@@ -1740,6 +1990,16 @@ impl RunningState {
     }
 
     #[cfg(test)]
+    pub(crate) fn console_anchor(&self) -> ConsoleAnchor {
+        self.console_anchor
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debugger_panes(&self) -> Vec<Entity<Pane>> {
+        self.panes.panes().into_iter().cloned().collect()
+    }
+
+    #[cfg(test)]
     pub(crate) fn module_list(&self) -> &Entity<ModuleList> {
         &self.module_list
     }
@@ -1750,6 +2010,23 @@ impl RunningState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if item == DebuggerPaneItem::Console
+            && !matches!(self.console_anchor, ConsoleAnchor::Debugger)
+            && let Some(pane) = self.resolve_external_pane(cx)
+        {
+            let console_index = pane.read(cx).items().position(|item| {
+                item.downcast::<SubView>()
+                    .is_some_and(|view| view.read(cx).kind == DebuggerPaneItem::Console)
+            });
+            if let Some(console_index) = console_index {
+                pane.update(cx, |pane, cx| {
+                    pane.activate_item(console_index, true, true, window, cx);
+                });
+                self.reveal_console_host(window, cx);
+                return;
+            }
+        }
+
         self.ensure_pane_item(item, window, cx);
 
         let (variable_list_position, pane) = self
@@ -1776,7 +2053,12 @@ impl RunningState {
 
     #[cfg(test)]
     pub(crate) fn serialized_layout(&self, cx: &App) -> SerializedLayout {
-        persistence::build_serialized_layout(&self.panes.root, self.dock_axis, cx)
+        persistence::build_serialized_layout(
+            &self.panes.root,
+            self.dock_axis,
+            self.console_anchor,
+            cx,
+        )
     }
 
     pub fn capabilities(&self, cx: &App) -> Capabilities {
