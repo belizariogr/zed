@@ -384,6 +384,12 @@ impl Render for TitleBar {
                 .child(self.render_call_controls(window, cx))
                 .children(self.render_connection_status(status, cx))
                 .child(self.update_version.clone())
+                .children(
+                    self.workspace
+                        .upgrade()
+                        .and_then(|workspace| workspace.read(cx).debugger_provider())
+                        .and_then(|provider| provider.titlebar_controls()),
+                )
                 .when(
                     user.is_none()
                         && is_signed_out_or_auth_error

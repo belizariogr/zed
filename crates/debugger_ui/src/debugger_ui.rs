@@ -21,6 +21,7 @@ mod dropdown_menus;
 mod new_process_modal;
 mod persistence;
 pub(crate) mod session;
+mod titlebar_controls;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod tests;

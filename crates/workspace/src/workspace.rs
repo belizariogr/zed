@@ -359,6 +359,10 @@ pub trait DebuggerProvider {
     fn debug_scenario_scheduled_last(&self, cx: &App) -> bool;
 
     fn active_thread_state(&self, cx: &App) -> Option<ThreadStatus>;
+
+    fn titlebar_controls(&self) -> Option<AnyView> {
+        None
+    }
 }
 
 /// Opens a file or directory.

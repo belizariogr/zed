@@ -1480,6 +1480,132 @@ async fn test_parent_session_survives_all_children_shutting_down(
 }
 
 #[gpui::test]
+async fn test_titlebar_debug_controls_follow_session_with_panel_closed(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+    let fs = FakeFs::new(executor);
+    fs.insert_tree(path!("/project"), json!({ "main.rs": "" }))
+        .await;
+    let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+    let workspace = init_test_workspace(&project, cx).await;
+    let cx = &mut VisualTestContext::from_window(*workspace, cx);
+    workspace
+        .update(cx, |multi, window, cx| {
+            multi.workspace().update(cx, |workspace, cx| {
+                let controls = workspace
+                    .debugger_provider()
+                    .and_then(|provider| provider.titlebar_controls())
+                    .expect("debugger provides titlebar controls");
+                workspace.set_titlebar_item(controls, window, cx);
+                workspace.close_panel::<DebugPanel>(window, cx);
+            });
+        })
+        .expect("workspace exists");
+    cx.refresh().expect("window refreshes");
+    assert!(cx.debug_bounds("debug-titlebar-controls").is_none());
+
+    let step_requests = Arc::new(AtomicUsize::new(0));
+    let pause_requests = Arc::new(AtomicUsize::new(0));
+    let session = start_debug_session(&workspace, cx, {
+        let step_requests = step_requests.clone();
+        let pause_requests = pause_requests.clone();
+        move |client| {
+            client.on_request::<Threads, _>(|_, _| {
+                Ok(dap::ThreadsResponse {
+                    threads: vec![dap::Thread {
+                        id: 1,
+                        name: "Main thread".into(),
+                    }],
+                })
+            });
+            client.on_request::<StackTrace, _>(|_, _| {
+                Ok(dap::StackTraceResponse {
+                    stack_frames: Vec::new(),
+                    total_frames: None,
+                })
+            });
+            client.on_request::<Next, _>({
+                let step_requests = step_requests.clone();
+                move |_, _| {
+                    step_requests.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            });
+            client.on_request::<dap::requests::Pause, _>({
+                let pause_requests = pause_requests.clone();
+                move |_, _| {
+                    pause_requests.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            });
+        }
+    })
+    .expect("debug session starts");
+    session.update(cx, |session, cx| {
+        session.threads(cx);
+    });
+    cx.run_until_parked();
+    workspace
+        .update(cx, |multi, window, cx| {
+            multi.workspace().update(cx, |workspace, cx| {
+                workspace.close_panel::<DebugPanel>(window, cx);
+            });
+        })
+        .expect("workspace exists");
+    cx.refresh().expect("window refreshes");
+    assert!(cx.debug_bounds("debug-titlebar-controls").is_some());
+    let step_button = cx
+        .debug_bounds("ICON-DebugStepOver")
+        .expect("step button exists");
+    cx.simulate_click(step_button.center(), gpui::Modifiers::none());
+    assert_eq!(step_requests.load(Ordering::SeqCst), 0);
+    let pause_button = cx
+        .debug_bounds("ICON-DebugPause")
+        .expect("pause button exists");
+    cx.simulate_click(pause_button.center(), gpui::Modifiers::none());
+    assert_eq!(pause_requests.load(Ordering::SeqCst), 1);
+
+    let client = session.read_with(cx, |session, _| {
+        session.adapter_client().expect("adapter is connected")
+    });
+    client
+        .fake_event(dap::messages::Events::Stopped(dap::StoppedEvent {
+            reason: dap::StoppedEventReason::Breakpoint,
+            description: None,
+            thread_id: Some(1),
+            preserve_focus_hint: None,
+            text: None,
+            all_threads_stopped: Some(true),
+            hit_breakpoint_ids: None,
+        }))
+        .await;
+    cx.run_until_parked();
+    workspace
+        .update(cx, |multi, window, cx| {
+            multi.workspace().update(cx, |workspace, cx| {
+                workspace.close_panel::<DebugPanel>(window, cx);
+            });
+        })
+        .expect("workspace exists");
+    cx.refresh().expect("window refreshes");
+    assert!(cx.debug_bounds("ICON-DebugContinue").is_some());
+    let step_button = cx
+        .debug_bounds("ICON-DebugStepOver")
+        .expect("step button exists");
+    cx.simulate_click(step_button.center(), gpui::Modifiers::none());
+    assert_eq!(step_requests.load(Ordering::SeqCst), 1);
+
+    let stop_button = cx.debug_bounds("ICON-Stop").expect("stop button exists");
+    cx.simulate_click(stop_button.center(), gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert!(session.read_with(cx, |session, _| session.is_terminated()));
+    cx.refresh().expect("window refreshes");
+    assert!(cx.debug_bounds("debug-titlebar-controls").is_none());
+}
+
+#[gpui::test]
 async fn test_running_session_binds_continue_before_first_stop(
     executor: BackgroundExecutor,
     cx: &mut TestAppContext,

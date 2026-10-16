@@ -238,7 +238,12 @@ impl DebugPanel {
                     )
                 });
 
-                workspace.set_debugger_provider(DebuggerProvider(debug_panel.clone()));
+                let controls =
+                    cx.new(|cx| crate::titlebar_controls::DebugControls::new(&debug_panel, cx));
+                workspace.set_debugger_provider(DebuggerProvider {
+                    panel: debug_panel.clone(),
+                    controls,
+                });
 
                 debug_panel
             })
@@ -2036,9 +2041,16 @@ impl Render for DebugPanel {
     }
 }
 
-struct DebuggerProvider(Entity<DebugPanel>);
+struct DebuggerProvider {
+    panel: Entity<DebugPanel>,
+    controls: Entity<crate::titlebar_controls::DebugControls>,
+}
 
 impl workspace::DebuggerProvider for DebuggerProvider {
+    fn titlebar_controls(&self) -> Option<gpui::AnyView> {
+        Some(self.controls.clone().into())
+    }
+
     fn start_session(
         &self,
         definition: DebugScenario,
@@ -2048,7 +2060,7 @@ impl workspace::DebuggerProvider for DebuggerProvider {
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.0.update(cx, |_, cx| {
+        self.panel.update(cx, |_, cx| {
             cx.defer_in(window, move |this, window, cx| {
                 this.start_session(definition, context, buffer, worktree_id, window, cx);
             })
@@ -2066,23 +2078,23 @@ impl workspace::DebuggerProvider for DebuggerProvider {
     }
 
     fn debug_scenario_scheduled(&self, cx: &mut App) {
-        self.0.update(cx, |this, _| {
+        self.panel.update(cx, |this, _| {
             this.debug_scenario_scheduled_last = true;
         });
     }
 
     fn task_scheduled(&self, cx: &mut App) {
-        self.0.update(cx, |this, _| {
+        self.panel.update(cx, |this, _| {
             this.debug_scenario_scheduled_last = false;
         })
     }
 
     fn debug_scenario_scheduled_last(&self, cx: &App) -> bool {
-        self.0.read(cx).debug_scenario_scheduled_last
+        self.panel.read(cx).debug_scenario_scheduled_last
     }
 
     fn active_thread_state(&self, cx: &App) -> Option<ThreadStatus> {
-        let session = self.0.read(cx).active_session()?;
+        let session = self.panel.read(cx).active_session()?;
         let running_state = session.read(cx).running_state();
         if running_state.read(cx).session().read(cx).is_terminated() {
             return None;
