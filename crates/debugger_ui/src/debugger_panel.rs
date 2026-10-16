@@ -2083,7 +2083,18 @@ impl workspace::DebuggerProvider for DebuggerProvider {
 
     fn active_thread_state(&self, cx: &App) -> Option<ThreadStatus> {
         let session = self.0.read(cx).active_session()?;
-        let thread = session.read(cx).running_state().read(cx).thread_id()?;
-        session.read(cx).session(cx).read(cx).thread_state(thread)
+        let running_state = session.read(cx).running_state();
+        if running_state.read(cx).session().read(cx).is_terminated() {
+            return None;
+        }
+
+        // Adapters often omit thread state until the first stop. Without a
+        // status, F5 stays bound to `debugger::Rerun` and starts another session.
+        Some(
+            running_state
+                .read(cx)
+                .thread_status(cx)
+                .unwrap_or(ThreadStatus::Running),
+        )
     }
 }

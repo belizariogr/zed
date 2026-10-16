@@ -1480,6 +1480,97 @@ async fn test_parent_session_survives_all_children_shutting_down(
 }
 
 #[gpui::test]
+async fn test_running_session_binds_continue_before_first_stop(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let fs = FakeFs::new(executor.clone());
+    fs.insert_tree(path!("/project"), json!({ "main.rs": "" }))
+        .await;
+
+    let project = Project::test(fs, [path!("/project").as_ref()], cx).await;
+    let workspace = init_test_workspace(&project, cx).await;
+    let cx = &mut VisualTestContext::from_window(*workspace, cx);
+
+    let session = start_debug_session(&workspace, cx, |client| {
+        client.on_request::<Threads, _>(|_, _| {
+            Ok(dap::ThreadsResponse {
+                threads: vec![dap::Thread {
+                    id: 1,
+                    name: "Main thread".into(),
+                }],
+            })
+        });
+        client.on_request::<StackTrace, _>(|_, _| {
+            Ok(dap::StackTraceResponse {
+                stack_frames: Vec::new(),
+                total_frames: None,
+            })
+        });
+        client.on_request::<Continue, _>(|_, _| {
+            Ok(dap::ContinueResponse {
+                all_threads_continued: None,
+            })
+        });
+    })
+    .unwrap();
+
+    session.update(cx, |session, cx| {
+        session.threads(cx);
+    });
+    cx.run_until_parked();
+
+    session.update(cx, |session, _| {
+        assert!(session.thread_state(ThreadId(1)).is_none());
+    });
+    workspace
+        .update(cx, |multi, _, cx| {
+            let context = multi.workspace().read(cx).key_context(cx);
+            assert!(context.contains("debugger_running"));
+            assert!(context.contains("debugger_session"));
+            assert!(!context.contains("debugger_stopped"));
+        })
+        .unwrap();
+
+    let client = session.update(cx, |session, _| session.adapter_client().unwrap());
+    client
+        .fake_event(dap::messages::Events::Stopped(dap::StoppedEvent {
+            reason: dap::StoppedEventReason::Breakpoint,
+            description: None,
+            thread_id: Some(1),
+            preserve_focus_hint: None,
+            text: None,
+            all_threads_stopped: Some(true),
+            hit_breakpoint_ids: None,
+        }))
+        .await;
+    cx.run_until_parked();
+
+    workspace
+        .update(cx, |multi, _, cx| {
+            let context = multi.workspace().read(cx).key_context(cx);
+            assert!(context.contains("debugger_stopped"));
+            assert!(!context.contains("debugger_running"));
+        })
+        .unwrap();
+
+    session.update(cx, |session, cx| {
+        session.continue_program(ThreadId(1), cx);
+    });
+    cx.run_until_parked();
+
+    workspace
+        .update(cx, |multi, _, cx| {
+            let context = multi.workspace().read(cx).key_context(cx);
+            assert!(context.contains("debugger_running"));
+            assert!(!context.contains("debugger_stopped"));
+        })
+        .unwrap();
+}
+
+#[gpui::test]
 async fn test_continue_response_updates_thread_statuses(
     executor: BackgroundExecutor,
     cx: &mut TestAppContext,
