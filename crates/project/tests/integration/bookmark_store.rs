@@ -844,6 +844,78 @@ mod integration {
     }
 
     #[gpui::test]
+    async fn test_numbered_bookmarks_in_untitled_buffer_move_to_saved_file(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let fs = fs::FakeFs::new(cx.executor());
+        fs.insert_tree(path!("/project"), json!({"other.rs": "xxx\n"}))
+            .await;
+
+        let project = Project::test(fs.clone(), [path!("/project").as_ref()], cx).await;
+        let untitled = project.update(cx, |project, cx| {
+            project.create_local_buffer("aaa\nbbb\nccc\n", None, true, cx)
+        });
+        let other = open_buffer(&project, path!("/project/other.rs"), cx).await;
+
+        toggle_numbered(&project, &untitled, 1, 2, 1, false, cx);
+        toggle_numbered(&project, &other, 0, 0, 1, false, cx);
+        let untitled_bookmark_row = |cx: &mut TestAppContext| {
+            project.update(cx, |project, cx| {
+                let snapshot = untitled.read(cx).text_snapshot();
+                project.bookmark_store().update(cx, |store, cx| {
+                    store
+                        .numbered_bookmark_in_buffer(&untitled, 1, cx)
+                        .map(|bookmark| bookmark.anchor.summary::<text::Point>(&snapshot))
+                })
+            })
+        };
+        assert_eq!(untitled_bookmark_row(cx), Some(text::Point::new(1, 2)));
+        // Untitled bookmarks are not persisted, so only the file on disk is listed.
+        let locations = numbered_locations(&project, cx);
+        assert_eq!(locations.len(), 1);
+        assert!(locations[0].0.ends_with(Path::new("other.rs")));
+
+        toggle_numbered(&project, &untitled, 1, 2, 1, false, cx);
+        assert_eq!(untitled_bookmark_row(cx), None);
+        toggle_numbered(&project, &untitled, 2, 0, 4, false, cx);
+
+        let worktree_id = project.read_with(cx, |project, cx| {
+            project
+                .worktrees(cx)
+                .next()
+                .expect("project should have a worktree")
+                .read(cx)
+                .id()
+        });
+        project
+            .update(cx, |project, cx| {
+                project.save_buffer_as(
+                    untitled.clone(),
+                    project::ProjectPath {
+                        worktree_id,
+                        path: util::rel_path::rel_path("saved.rs").into(),
+                    },
+                    cx,
+                )
+            })
+            .await
+            .expect("saving the untitled buffer should succeed");
+        cx.executor().run_until_parked();
+
+        let locations = numbered_locations(&project, cx);
+        assert_eq!(locations.len(), 2);
+        let (saved_path, saved_bookmark) = locations
+            .iter()
+            .find(|(path, _)| path.ends_with(Path::new("saved.rs")))
+            .expect("bookmark should move to the saved file");
+        assert_eq!(saved_path.as_ref(), Path::new(path!("/project/saved.rs")));
+        assert_eq!(saved_bookmark.number, 4);
+        assert_eq!(saved_bookmark.row, 2);
+    }
+
+    #[gpui::test]
     async fn test_numbered_bookmarks_vscode_project_file_roundtrip(cx: &mut TestAppContext) {
         init_test(cx);
 

@@ -37959,6 +37959,71 @@ async fn test_jump_to_numbered_bookmark_from_multibuffer_excerpt(cx: &mut TestAp
 }
 
 #[gpui::test]
+async fn test_numbered_bookmarks_in_untitled_buffer(cx: &mut TestAppContext) {
+    let ctx = BookmarkTestContext::new("", cx).await;
+    let mut cx = ctx.cx;
+    let untitled_editor = cx.update(|window, cx| {
+        let buffer = ctx.project.update(cx, |project, cx| {
+            project.create_local_buffer("Line 0\nLine 1\nLine 2\nLine 3", None, true, cx)
+        });
+        let multibuffer = cx.new(|cx| MultiBuffer::singleton(buffer, cx));
+        cx.new(|cx| {
+            Editor::new(
+                EditorMode::full(),
+                multibuffer,
+                Some(ctx.project.clone()),
+                window,
+                cx,
+            )
+        })
+    });
+    let cursor_row = |editor: &Entity<Editor>, cx: &mut VisualTestContext| {
+        editor.update(cx, |editor, cx| {
+            editor
+                .selections
+                .newest::<Point>(&editor.display_snapshot(cx))
+                .head()
+                .row
+        })
+    };
+
+    untitled_editor.update_in(&mut cx, |editor, window, cx| {
+        editor.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
+            selections.select_ranges([Point::new(2, 0)..Point::new(2, 0)]);
+        });
+        editor.toggle_numbered_bookmark_1(&crate::ToggleNumberedBookmark1, window, cx);
+        editor.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
+            selections.select_ranges([Point::new(0, 0)..Point::new(0, 0)]);
+        });
+    });
+    assert_eq!(cursor_row(&untitled_editor, &mut cx), 0);
+
+    untitled_editor.update_in(&mut cx, |editor, window, cx| {
+        editor.jump_to_numbered_bookmark_1(&crate::JumpToNumberedBookmark1, window, cx);
+    });
+    assert_eq!(cursor_row(&untitled_editor, &mut cx), 2);
+    assert_eq!(
+        untitled_editor.update(&mut cx, |editor, cx| {
+            editor
+                .numbered_bookmark_hotkeys(cx)
+                .into_iter()
+                .filter(|keystroke| !keystroke.modifiers.shift)
+                .map(|keystroke| keystroke.key)
+                .collect::<Vec<_>>()
+        }),
+        ["1"]
+    );
+
+    untitled_editor.update_in(&mut cx, |editor, window, cx| {
+        editor.clear_numbered_bookmarks(&crate::ClearNumberedBookmarks, window, cx);
+    });
+    let has_bookmarks = ctx.project.read_with(&cx, |project, cx| {
+        project.bookmark_store().read(cx).has_numbered_bookmarks()
+    });
+    assert!(!has_bookmarks);
+}
+
+#[gpui::test]
 async fn test_clearing_bookmark_store_notifies_editor(cx: &mut TestAppContext) {
     let mut ctx = BookmarkTestContext::new("Line 0\nLine 1\nLine 2\nLine 3", cx).await;
 

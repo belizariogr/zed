@@ -9,7 +9,7 @@ use anyhow::Result;
 use collections::{HashMap, HashSet};
 use fs::Fs;
 use futures::{StreamExt, TryFutureExt, stream::FuturesUnordered};
-use gpui::{App, AppContext, Context, Entity, EventEmitter, Subscription, Task};
+use gpui::{App, AppContext, Context, Entity, EntityId, EventEmitter, Subscription, Task};
 use itertools::Itertools;
 use language::{Buffer, BufferEvent};
 use serde::{Deserialize, Serialize};
@@ -122,6 +122,37 @@ impl BufferBookmarks {
     }
 }
 
+/// Numbered bookmarks of a buffer that has no file yet. They aren't persisted, and
+/// move to the file's entry once the buffer is saved.
+struct UntitledNumberedBookmarks {
+    numbered: [Option<text::Anchor>; NUMBERED_BOOKMARK_COUNT],
+    _subscriptions: [Subscription; 2],
+}
+
+impl UntitledNumberedBookmarks {
+    fn new(buffer: &Entity<Buffer>, cx: &mut Context<BookmarkStore>) -> Self {
+        let file_changed = cx.subscribe(buffer, |bookmark_store, buffer, event, cx| {
+            if let BufferEvent::FileHandleChanged = event {
+                bookmark_store.handle_untitled_file_changed(buffer, cx);
+            }
+        });
+        let buffer_id = buffer.entity_id();
+        let released = cx.observe_release(buffer, move |bookmark_store, _, cx| {
+            if bookmark_store
+                .untitled_numbered
+                .remove(&buffer_id)
+                .is_some()
+            {
+                BookmarkStore::emit_bookmarks_changed(cx);
+            }
+        });
+        Self {
+            numbered: std::array::from_fn(|_| None),
+            _subscriptions: [file_changed, released],
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum BookmarkEntry {
     Loaded(BufferBookmarks),
@@ -156,6 +187,7 @@ pub struct BookmarkStore {
     buffer_store: Entity<BufferStore>,
     worktree_store: Entity<WorktreeStore>,
     bookmarks: BTreeMap<Arc<Path>, BookmarkEntry>,
+    untitled_numbered: HashMap<EntityId, UntitledNumberedBookmarks>,
     paths_failed_to_open: HashSet<Arc<Path>>,
     _worktree_store_subscription: Subscription,
 }
@@ -174,6 +206,7 @@ impl BookmarkStore {
             buffer_store,
             worktree_store,
             bookmarks: BTreeMap::new(),
+            untitled_numbered: HashMap::default(),
             paths_failed_to_open: HashSet::default(),
             _worktree_store_subscription: worktree_store_subscription,
         }
@@ -580,6 +613,7 @@ impl BookmarkStore {
             return;
         };
         let Some(abs_path) = Self::abs_path_from_buffer(&buffer, cx) else {
+            self.toggle_untitled_numbered_bookmark(buffer, anchor, index, unique_across_files, cx);
             return;
         };
 
@@ -624,8 +658,95 @@ impl BookmarkStore {
             for path in paths_to_clear {
                 self.clear_numbered_bookmark_at_path(&path, index);
             }
+            self.clear_untitled_numbered_bookmark(None, index);
         }
 
+        Self::emit_bookmarks_changed(cx);
+    }
+
+    fn toggle_untitled_numbered_bookmark(
+        &mut self,
+        buffer: Entity<Buffer>,
+        anchor: text::Anchor,
+        index: usize,
+        unique_across_files: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if buffer.read(cx).file().is_some() {
+            return;
+        }
+        let buffer_id = buffer.entity_id();
+        let snapshot = buffer.read(cx).text_snapshot();
+        let row = anchor.summary::<Point>(&snapshot).row;
+        let entry = match self.untitled_numbered.entry(buffer_id) {
+            collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(UntitledNumberedBookmarks::new(&buffer, cx))
+            }
+        };
+        let existing_number = entry.numbered.iter().position(|slot| {
+            slot.is_some_and(|existing| existing.summary::<Point>(&snapshot).row == row)
+        });
+        if let Some(existing_index) = existing_number {
+            entry.numbered[existing_index] = None;
+        }
+        let should_set = existing_number != Some(index);
+        if should_set {
+            entry.numbered[index] = Some(anchor);
+        }
+        if !entry.numbered.iter().any(Option::is_some) {
+            self.untitled_numbered.remove(&buffer_id);
+        }
+
+        if should_set && unique_across_files {
+            let paths: Vec<Arc<Path>> = self.bookmarks.keys().cloned().collect();
+            for path in paths {
+                self.clear_numbered_bookmark_at_path(&path, index);
+            }
+            self.clear_untitled_numbered_bookmark(Some(buffer_id), index);
+        }
+
+        Self::emit_bookmarks_changed(cx);
+    }
+
+    fn clear_untitled_numbered_bookmark(&mut self, except: Option<EntityId>, index: usize) {
+        self.untitled_numbered.retain(|buffer_id, entry| {
+            if except != Some(*buffer_id) {
+                entry.numbered[index] = None;
+            }
+            entry.numbered.iter().any(Option::is_some)
+        });
+    }
+
+    fn untitled_numbered_slots(
+        &self,
+        buffer: &Entity<Buffer>,
+    ) -> Option<&[Option<text::Anchor>; NUMBERED_BOOKMARK_COUNT]> {
+        self.untitled_numbered
+            .get(&buffer.entity_id())
+            .map(|entry| &entry.numbered)
+    }
+
+    fn handle_untitled_file_changed(&mut self, buffer: Entity<Buffer>, cx: &mut Context<Self>) {
+        let Some(abs_path) = Self::abs_path_from_buffer(&buffer, cx) else {
+            return;
+        };
+        let Some(untitled) = self.untitled_numbered.remove(&buffer.entity_id()) else {
+            return;
+        };
+        self.resolve_anchors_if_needed(&abs_path, &buffer, cx);
+        let entry = self
+            .bookmarks
+            .entry(abs_path)
+            .or_insert_with(|| BookmarkEntry::Loaded(BufferBookmarks::new(buffer.clone(), cx)));
+        if let BookmarkEntry::Loaded(buffer_bookmarks) = entry {
+            for (slot, untitled_slot) in buffer_bookmarks.numbered.iter_mut().zip(untitled.numbered)
+            {
+                if slot.is_none() {
+                    *slot = untitled_slot;
+                }
+            }
+        }
         Self::emit_bookmarks_changed(cx);
     }
 
@@ -658,20 +779,21 @@ impl BookmarkStore {
         row: u32,
         cx: &mut Context<Self>,
     ) -> Option<u8> {
-        let abs_path = Self::abs_path_from_buffer(buffer, cx)?;
-        self.resolve_anchors_if_needed(&abs_path, buffer, cx);
-        let BookmarkEntry::Loaded(buffer_bookmarks) = self.bookmarks.get(&abs_path)? else {
-            return None;
-        };
         let snapshot = buffer.read(cx).text_snapshot();
-        buffer_bookmarks
-            .numbered
-            .iter()
-            .enumerate()
-            .find_map(|(index, slot)| {
-                let anchor = (*slot)?;
-                (anchor.summary::<Point>(&snapshot).row == row).then_some(index as u8)
-            })
+        let numbered = match Self::abs_path_from_buffer(buffer, cx) {
+            Some(abs_path) => {
+                self.resolve_anchors_if_needed(&abs_path, buffer, cx);
+                let BookmarkEntry::Loaded(buffer_bookmarks) = self.bookmarks.get(&abs_path)? else {
+                    return None;
+                };
+                &buffer_bookmarks.numbered
+            }
+            None => self.untitled_numbered_slots(buffer)?,
+        };
+        numbered.iter().enumerate().find_map(|(index, slot)| {
+            let anchor = (*slot)?;
+            (anchor.summary::<Point>(&snapshot).row == row).then_some(index as u8)
+        })
     }
 
     pub fn numbered_bookmark_in_buffer(
@@ -681,14 +803,19 @@ impl BookmarkStore {
         cx: &mut Context<Self>,
     ) -> Option<NumberedBookmark> {
         let index = numbered_index(number)?;
-        let abs_path = Self::abs_path_from_buffer(buffer, cx)?;
-        self.resolve_anchors_if_needed(&abs_path, buffer, cx);
-        let BookmarkEntry::Loaded(buffer_bookmarks) = self.bookmarks.get(&abs_path)? else {
-            return None;
+        let numbered = match Self::abs_path_from_buffer(buffer, cx) {
+            Some(abs_path) => {
+                self.resolve_anchors_if_needed(&abs_path, buffer, cx);
+                let BookmarkEntry::Loaded(buffer_bookmarks) = self.bookmarks.get(&abs_path)? else {
+                    return None;
+                };
+                &buffer_bookmarks.numbered
+            }
+            None => self.untitled_numbered_slots(buffer)?,
         };
         Some(NumberedBookmark {
             number,
-            anchor: buffer_bookmarks.numbered[index]?,
+            anchor: numbered[index]?,
         })
     }
 
@@ -699,18 +826,24 @@ impl BookmarkStore {
         buffer_snapshot: &BufferSnapshot,
         cx: &mut Context<Self>,
     ) -> Vec<NumberedBookmark> {
-        let Some(abs_path) = Self::abs_path_from_buffer(&buffer, cx) else {
-            return Vec::new();
+        let numbered = match Self::abs_path_from_buffer(&buffer, cx) {
+            Some(abs_path) => {
+                self.resolve_anchors_if_needed(&abs_path, &buffer, cx);
+                let Some(BookmarkEntry::Loaded(file_bookmarks)) = self.bookmarks.get(&abs_path)
+                else {
+                    return Vec::new();
+                };
+                &file_bookmarks.numbered
+            }
+            None => {
+                let Some(numbered) = self.untitled_numbered_slots(&buffer) else {
+                    return Vec::new();
+                };
+                numbered
+            }
         };
 
-        self.resolve_anchors_if_needed(&abs_path, &buffer, cx);
-
-        let Some(BookmarkEntry::Loaded(file_bookmarks)) = self.bookmarks.get(&abs_path) else {
-            return Vec::new();
-        };
-
-        file_bookmarks
-            .numbered
+        numbered
             .iter()
             .enumerate()
             .filter_map(|(index, slot)| {
@@ -770,6 +903,9 @@ impl BookmarkStore {
         cx: &mut Context<Self>,
     ) {
         let Some(abs_path) = Self::abs_path_from_buffer(buffer, cx) else {
+            if self.untitled_numbered.remove(&buffer.entity_id()).is_some() {
+                Self::emit_bookmarks_changed(cx);
+            }
             return;
         };
 
@@ -790,10 +926,11 @@ impl BookmarkStore {
     }
 
     pub fn has_numbered_bookmarks(&self) -> bool {
-        self.bookmarks.values().any(|entry| match entry {
-            BookmarkEntry::Loaded(buffer_bookmarks) => buffer_bookmarks.has_numbered(),
-            BookmarkEntry::Unloaded { numbered, .. } => !numbered.is_empty(),
-        })
+        !self.untitled_numbered.is_empty()
+            || self.bookmarks.values().any(|entry| match entry {
+                BookmarkEntry::Loaded(buffer_bookmarks) => buffer_bookmarks.has_numbered(),
+                BookmarkEntry::Unloaded { numbered, .. } => !numbered.is_empty(),
+            })
     }
 
     pub fn has_numbered_bookmarks_in_buffer(
@@ -802,7 +939,7 @@ impl BookmarkStore {
         cx: &mut Context<Self>,
     ) -> bool {
         let Some(abs_path) = Self::abs_path_from_buffer(buffer, cx) else {
-            return false;
+            return self.untitled_numbered_slots(buffer).is_some();
         };
         self.resolve_anchors_if_needed(&abs_path, buffer, cx);
         match self.bookmarks.get(&abs_path) {
@@ -1152,6 +1289,7 @@ impl BookmarkStore {
     }
 
     pub fn clear_all_numbered_bookmarks(&mut self, cx: &mut Context<Self>) {
+        self.untitled_numbered.clear();
         for entry in self.bookmarks.values_mut() {
             match entry {
                 BookmarkEntry::Loaded(buffer_bookmarks) => {

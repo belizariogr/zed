@@ -515,7 +515,26 @@ impl Editor {
         let Some(current_path) =
             project::bookmark_store::BookmarkStore::abs_path_from_buffer(&current_buffer, cx)
         else {
-            self.warn_numbered_bookmark_not_defined(number, cx);
+            let bookmark = bookmark_store.update(cx, |store, cx| {
+                store.numbered_bookmark_in_buffer(&current_buffer, number, cx)
+            });
+            if let Some(bookmark) = bookmark {
+                let point = bookmark
+                    .anchor
+                    .summary::<Point>(&current_buffer.read(cx).text_snapshot());
+                self.reveal_numbered_bookmark_in_current_file(
+                    &current_buffer,
+                    &SerializedNumberedBookmark {
+                        number,
+                        row: point.row,
+                        column: point.column,
+                    },
+                    window,
+                    cx,
+                );
+            } else {
+                self.warn_numbered_bookmark_not_defined(number, cx);
+            }
             return;
         };
         let current_row = current_point.row;
