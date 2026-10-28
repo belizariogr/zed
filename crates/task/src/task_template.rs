@@ -375,17 +375,19 @@ fn to_hex_hash(object: impl Serialize) -> anyhow::Result<String> {
 pub fn substitute_variables_in_str(template_str: &str, context: &TaskContext) -> Option<String> {
     let mut variable_names = HashMap::default();
     let mut substituted_variables = HashSet::default();
+    // Debug configurations are not run through a shell, so environment references
+    // (e.g. `${env:HOME}` from `launch.json`) must be resolved here from the project environment.
     let task_variables = context
-        .task_variables
-        .0
+        .project_env
         .iter()
-        .map(|(key, value)| {
+        .map(|(key, value)| (key.clone(), value.as_str()))
+        .chain(context.task_variables.0.iter().map(|(key, value)| {
             let key_string = key.to_string();
             if !variable_names.contains_key(&key_string) {
                 variable_names.insert(key_string.clone(), key.clone());
             }
             (key_string, value.as_str())
-        })
+        }))
         .collect::<HashMap<_, _>>();
     substitute_all_template_variables_in_str(
         template_str,
@@ -1234,6 +1236,28 @@ mod tests {
             vec!["run", "--bin", "test_bin", "", "--config="],
             "args that consist entirely of variables resolved to empty strings should be omitted, \
             while literal empty args and partially substituted args should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_substituting_project_environment_in_str() {
+        let context = TaskContext {
+            cwd: None,
+            task_variables: TaskVariables::from_iter([(
+                VariableName::WorktreeRoot,
+                "/project".to_string(),
+            )]),
+            project_env: HashMap::from_iter([
+                ("PROFILE".to_string(), "dev".to_string()),
+                ("ZED_WORKTREE_ROOT".to_string(), "/shadowed".to_string()),
+            ]),
+        };
+        assert_eq!(
+            substitute_variables_in_str(
+                "${ZED_WORKTREE_ROOT}/${PROFILE}/${UNKNOWN_VARIABLE}",
+                &context
+            ),
+            Some("/project/dev/${UNKNOWN_VARIABLE}".to_string())
         );
     }
 }

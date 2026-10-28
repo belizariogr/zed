@@ -337,6 +337,27 @@ impl Inventory {
         }
     }
 
+    /// Returns the settings folder (e.g. `frontend/.vscode` for `frontend/.vscode/launch.json`)
+    /// that defines the given debug scenario.
+    pub fn debug_scenario_settings_directory(
+        &self,
+        worktree_id: WorktreeId,
+        scenario: &DebugScenario,
+    ) -> Option<Arc<RelPath>> {
+        let directories = self.scenarios_from_settings.worktree.get(&worktree_id)?;
+        let (settings_directory, _) = directories
+            .iter()
+            .find(|(_, scenarios)| scenarios.contains(scenario))
+            .or_else(|| {
+                directories.iter().find(|(_, scenarios)| {
+                    scenarios
+                        .iter()
+                        .any(|candidate| candidate.label == scenario.label)
+                })
+            })?;
+        Some(settings_directory.clone())
+    }
+
     pub fn last_scheduled_scenario(&self) -> Option<&(DebugScenario, DebugScenarioContext)> {
         self.last_scheduled_scenarios.front()
     }
@@ -1212,6 +1233,45 @@ mod tests {
                 .expect("Package script should have a matching debug adapter");
             assert_eq!(scenario.adapter.as_ref(), expected_adapter);
         }
+    }
+
+    #[gpui::test]
+    fn test_debug_scenario_settings_directory(cx: &mut gpui::TestAppContext) {
+        let inventory = cx.update(Inventory::new);
+        let worktree_id = WorktreeId::from_usize(0);
+        let scenario = |label: &str| {
+            format!(r#"[{{"label": "{label}", "adapter": "JavaScript", "request": "launch"}}]"#)
+        };
+        inventory.update(cx, |inventory, _| {
+            for (directory, label) in [(".vscode", "root"), ("frontend/.vscode", "frontend")] {
+                inventory
+                    .update_file_based_scenarios(
+                        TaskSettingsLocation::Worktree(settings::SettingsLocation {
+                            worktree_id,
+                            path: RelPath::from_unix_str(directory).unwrap(),
+                        }),
+                        Some(&scenario(label)),
+                    )
+                    .unwrap();
+            }
+        });
+        inventory.read_with(cx, |inventory, _| {
+            let directory_for = |label: &str| {
+                let scenario = parse_json_with_comments::<Vec<DebugScenario>>(&scenario(label))
+                    .unwrap()
+                    .remove(0);
+                inventory.debug_scenario_settings_directory(worktree_id, &scenario)
+            };
+            assert_eq!(
+                directory_for("root"),
+                Some(RelPath::from_unix_str(".vscode").unwrap().into())
+            );
+            assert_eq!(
+                directory_for("frontend"),
+                Some(RelPath::from_unix_str("frontend/.vscode").unwrap().into())
+            );
+            assert_eq!(directory_for("missing"), None);
+        });
     }
 
     fn context_with_greeting(value: &str) -> TaskContext {

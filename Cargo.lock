@@ -4773,6 +4773,7 @@ dependencies = [
  "dap_adapters",
  "db",
  "debugger_tools",
+ "dotenvy",
  "editor",
  "feature_flags",
  "file_icons",

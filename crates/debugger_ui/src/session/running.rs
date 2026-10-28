@@ -55,12 +55,18 @@ use ui::{
     FluentBuilder, IntoElement, Render, StatefulInteractiveElement, Tab, Tooltip, VisibleOnHover,
     VisualContext, prelude::*,
 };
-use util::ResultExt;
+use util::{ResultExt, rel_path::RelPath};
 use variable_list::VariableList;
 use workspace::{
     ActivePaneDecorator, DraggedTab, Item, ItemHandle, Member, Pane, PaneGroup, SplitDirection,
     Workspace, item::TabContentParams, move_item, pane::Event,
 };
+
+#[derive(Default)]
+struct ScenarioSource {
+    workspace_folder: Option<String>,
+    dotenv: Option<Task<Result<Entity<Buffer>>>>,
+}
 
 static PROCESS_ID_PLACEHOLDER: LazyLock<String> =
     LazyLock::new(|| task::VariableName::PickProcessId.template_value());
@@ -1336,6 +1342,100 @@ impl RunningState {
         self.panes.pane_at_pixel_position(position).is_some()
     }
 
+    fn scenario_source(
+        project: &Entity<Project>,
+        scenario: &DebugScenario,
+        worktree_id: Option<WorktreeId>,
+        cx: &mut App,
+    ) -> ScenarioSource {
+        let Some(worktree) = worktree_id
+            .and_then(|worktree_id| project.read(cx).worktree_for_id(worktree_id, cx))
+            .or_else(|| project.read(cx).visible_worktrees(cx).next())
+        else {
+            return ScenarioSource::default();
+        };
+        let worktree_id = worktree.read(cx).id();
+        let settings_directory = project
+            .read(cx)
+            .task_store()
+            .read(cx)
+            .task_inventory()
+            .and_then(|inventory| {
+                inventory
+                    .read(cx)
+                    .debug_scenario_settings_directory(worktree_id, scenario)
+            });
+        // A `launch.json` nested in a subproject (e.g. `frontend/.vscode`) treats the folder
+        // containing `.vscode` as its workspace folder, like VS Code does when opening that folder.
+        let scenario_directory = settings_directory
+            .as_ref()
+            .and_then(|directory| directory.parent())
+            .map(Arc::from)
+            .unwrap_or_else(RelPath::empty_arc);
+        let workspace_folder = settings_directory
+            .as_ref()
+            .filter(|directory| directory.file_name() == Some(".vscode"))
+            .map(|_| {
+                worktree
+                    .read(cx)
+                    .absolutize(&scenario_directory)
+                    .to_string_lossy()
+                    .into_owned()
+            });
+
+        let dotenv = RelPath::from_unix_str(".env")
+            .log_err()
+            .map(|dotenv_name| scenario_directory.join(dotenv_name))
+            // Only open the file when it exists, so projects without a `.env` don't log errors.
+            .filter(|dotenv_path| {
+                worktree
+                    .read(cx)
+                    .entry_for_path(dotenv_path)
+                    .is_some_and(|entry| entry.is_file())
+            })
+            .map(|dotenv_path| {
+                project.update(cx, |project, cx| {
+                    project.open_buffer((worktree_id, dotenv_path), cx)
+                })
+            });
+
+        ScenarioSource {
+            workspace_folder,
+            dotenv,
+        }
+    }
+
+    /// Variables from the scenario's `.env` file take precedence over the project environment,
+    /// so `${env:NAME}` references in debug configurations can be filled per project.
+    async fn substitution_context(
+        task_context: &SharedTaskContext,
+        scenario_source: ScenarioSource,
+        cx: &mut gpui::AsyncWindowContext,
+    ) -> TaskContext {
+        let mut context = TaskContext::clone(task_context);
+        if let Some(workspace_folder) = scenario_source.workspace_folder {
+            context
+                .task_variables
+                .insert(task::VariableName::WorktreeRoot, workspace_folder);
+        }
+        let Some(dotenv_buffer) = scenario_source.dotenv else {
+            return context;
+        };
+        let Some(dotenv_buffer) = dotenv_buffer.await.log_err() else {
+            return context;
+        };
+        let dotenv_text = dotenv_buffer.read_with(cx, |buffer, _| buffer.text());
+        for variable in dotenvy::from_read_iter(dotenv_text.as_bytes()) {
+            match variable {
+                Ok((name, value)) => {
+                    context.project_env.insert(name, value);
+                }
+                Err(error) => log::warn!("Failed to parse a variable from .env: {error}"),
+            }
+        }
+        context
+    }
+
     pub(crate) fn resolve_scenario(
         &self,
         scenario: DebugScenario,
@@ -1360,6 +1460,7 @@ impl RunningState {
             .remote_client()
             .as_ref()
             .and_then(|remote| remote.read(cx).shell());
+        let scenario_source = Self::scenario_source(&project, &scenario, worktree_id, cx);
 
         cx.spawn_in(window, async move |this, cx| {
             let DebugScenario {
@@ -1369,8 +1470,10 @@ impl RunningState {
                 mut config,
                 tcp_connection,
             } = scenario;
-            Self::relativize_paths(None, &mut config, &task_context);
-            Self::substitute_variables_in_config(&mut config, &task_context);
+            let substitution_context =
+                Self::substitution_context(&task_context, scenario_source, cx).await;
+            Self::relativize_paths(None, &mut config, &substitution_context);
+            Self::substitute_variables_in_config(&mut config, &substitution_context);
 
             if Self::contains_substring(&config, PROCESS_ID_PLACEHOLDER.as_str()) || label.as_ref().contains(PROCESS_ID_PLACEHOLDER.as_str()) {
                 let (tx, rx) = futures::channel::oneshot::channel::<Option<i32>>();
@@ -1555,7 +1658,7 @@ impl RunningState {
                 config = scenario.config;
                 util::merge_non_null_json_value_into(extra_config, &mut config);
 
-                Self::substitute_variables_in_config(&mut config, &task_context);
+                Self::substitute_variables_in_config(&mut config, &substitution_context);
             } else {
                 let Err(e) = request_type else {
                     unreachable!();

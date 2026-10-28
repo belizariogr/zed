@@ -1,4 +1,3 @@
-use collections::HashMap;
 use serde::Deserialize;
 use util::ResultExt as _;
 
@@ -101,18 +100,7 @@ impl TryFrom<VsCodeDebugTaskFile> for DebugTaskFile {
     type Error = anyhow::Error;
 
     fn try_from(file: VsCodeDebugTaskFile) -> Result<Self, Self::Error> {
-        let replacer = EnvVariableReplacer::new(HashMap::from_iter([
-            (
-                "workspaceFolder".to_owned(),
-                VariableName::WorktreeRoot.to_string(),
-            ),
-            (
-                "relativeFile".to_owned(),
-                VariableName::RelativeFile.to_string(),
-            ),
-            ("file".to_owned(), VariableName::File.to_string()),
-        ]))
-        .with_commands([(
+        let replacer = EnvVariableReplacer::vscode().with_commands([(
             "pickMyProcess".to_owned(),
             VariableName::PickProcessId.to_string(),
         )]);
@@ -251,6 +239,40 @@ mod tests {
         for platform in ["windows", "linux", "osx"] {
             assert!(scenario.config.get(platform).is_none());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_predefined_variables() -> anyhow::Result<()> {
+        let parsed: VsCodeDebugTaskFile = serde_json::from_value(json!({
+            "configurations": [{
+                "name": "Launch",
+                "type": "node",
+                "request": "launch",
+                "runtimeArgs": ["--user-data-dir=${userHome}${/}profile${pathSeparator}dev"],
+                "program": "${fileDirname}/${fileBasenameNoExtension}.js",
+                "args": ["${relativeFileDirname}", "${fileBasename}", "${lineNumber}:${columnNumber}"],
+            }],
+        }))?;
+        let scenarios = DebugTaskFile::try_from(parsed)?;
+        let scenario = scenarios.0.first().expect("configuration should convert");
+        let home = util::paths::home_dir().to_string_lossy().into_owned();
+        let separator = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            scenario.config["runtimeArgs"],
+            json!([format!(
+                "--user-data-dir={home}{separator}profile{separator}dev"
+            )])
+        );
+        assert_eq!(scenario.config["program"], "${ZED_DIRNAME}/${ZED_STEM}.js");
+        assert_eq!(
+            scenario.config["args"],
+            json!([
+                "${ZED_RELATIVE_DIR}",
+                "${ZED_FILENAME}",
+                "${ZED_ROW}:${ZED_COLUMN}"
+            ])
+        );
         Ok(())
     }
 

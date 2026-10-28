@@ -407,6 +407,7 @@ type ZedEnvVariable = String;
 struct EnvVariableReplacer {
     variables: HashMap<VsCodeEnvVariable, ZedEnvVariable>,
     commands: HashMap<VsCodeCommand, ZedEnvVariable>,
+    values: HashMap<VsCodeEnvVariable, String>,
 }
 
 impl EnvVariableReplacer {
@@ -414,7 +415,48 @@ impl EnvVariableReplacer {
         Self {
             variables,
             commands: HashMap::default(),
+            values: HashMap::default(),
         }
+    }
+
+    /// Maps the VS Code predefined variables (https://code.visualstudio.com/docs/reference/variables-reference)
+    /// that have a Zed task variable equivalent, and resolves the ones that do not depend on the task context.
+    fn vscode() -> Self {
+        Self::new(HashMap::from_iter(
+            [
+                ("workspaceFolder", VariableName::WorktreeRoot),
+                ("fileWorkspaceFolder", VariableName::WorktreeRoot),
+                ("file", VariableName::File),
+                ("relativeFile", VariableName::RelativeFile),
+                ("relativeFileDirname", VariableName::RelativeDir),
+                ("fileBasename", VariableName::Filename),
+                ("fileBasenameNoExtension", VariableName::Stem),
+                ("fileDirname", VariableName::Dirname),
+                ("lineNumber", VariableName::Row),
+                ("columnNumber", VariableName::Column),
+                ("selectedText", VariableName::SelectedText),
+            ]
+            .map(|(vscode_name, zed_name)| (vscode_name.to_owned(), zed_name.to_string())),
+        ))
+        .with_values([
+            (
+                "userHome".to_owned(),
+                util::paths::home_dir().to_string_lossy().into_owned(),
+            ),
+            (
+                "pathSeparator".to_owned(),
+                std::path::MAIN_SEPARATOR.to_string(),
+            ),
+            ("/".to_owned(), std::path::MAIN_SEPARATOR.to_string()),
+        ])
+    }
+
+    fn with_values(
+        mut self,
+        values: impl IntoIterator<Item = (VsCodeEnvVariable, String)>,
+    ) -> Self {
+        self.values = values.into_iter().collect();
+        self
     }
 
     fn with_commands(
@@ -456,6 +498,9 @@ impl EnvVariableReplacer {
             }
 
             let (variable_name, default) = (left, right);
+            if let Some(value) = self.values.get(variable_name) {
+                return Some(value.clone());
+            }
             let append_previous_default = |ret: &mut String| {
                 if !default.is_empty() {
                     ret.push_str(default);

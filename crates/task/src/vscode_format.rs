@@ -147,18 +147,7 @@ impl TryFrom<VsCodeTaskFile> for TaskTemplates {
     type Error = anyhow::Error;
 
     fn try_from(value: VsCodeTaskFile) -> Result<Self, Self::Error> {
-        let replacer = EnvVariableReplacer::new(HashMap::from_iter([
-            (
-                "workspaceFolder".to_owned(),
-                VariableName::WorktreeRoot.to_string(),
-            ),
-            ("file".to_owned(), VariableName::File.to_string()),
-            ("lineNumber".to_owned(), VariableName::Row.to_string()),
-            (
-                "selectedText".to_owned(),
-                VariableName::SelectedText.to_string(),
-            ),
-        ]));
+        let replacer = EnvVariableReplacer::vscode();
         let templates = value
             .tasks
             .into_iter()
