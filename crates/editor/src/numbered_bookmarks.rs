@@ -105,7 +105,16 @@ impl Editor {
             return Vec::new();
         };
         let buffers = self.buffer.read(cx).all_buffers();
-        store.update(cx, |store, cx| {
+        let toggle_hotkeys = (0..=9).map(|number| Keystroke {
+            modifiers: Modifiers {
+                platform: true,
+                shift: true,
+                ..Modifiers::none()
+            },
+            key: number.to_string(),
+            key_char: None,
+        });
+        let jump_hotkeys = store.update(cx, |store, cx| {
             (0..=9)
                 .filter(|number| {
                     buffers.iter().any(|buffer| {
@@ -122,37 +131,41 @@ impl Editor {
                     key: number.to_string(),
                     key_char: None,
                 })
-                .collect()
-        })
+                .collect::<Vec<_>>()
+        });
+        toggle_hotkeys.chain(jump_hotkeys).collect()
     }
 
+    /// System shortcuts are only suppressed while a text editor is focused, so
+    /// they keep working in panels, other views, and other apps.
     pub(crate) fn refresh_numbered_bookmark_hotkeys(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !cfg!(target_os = "macos") || self.bookmark_store.is_none() {
+        if !cfg!(target_os = "macos") || self.bookmark_store.is_none() || !self.is_focused(window) {
             return;
         }
-        if let Some(workspace) = self.workspace() {
-            let active_editor = workspace.read(cx).active_item(cx).and_then(|item| {
-                if item.item_id() == cx.entity_id() {
-                    Some(cx.entity_id())
-                } else {
-                    item.act_as::<Editor>(cx).map(|editor| editor.entity_id())
-                }
-            });
-            if active_editor.is_none() {
-                window.set_system_hotkeys_to_suppress(&[]);
-                return;
-            }
-            if active_editor != Some(cx.entity_id()) {
-                return;
-            }
-        } else if !self.is_focused(window) {
-            return;
+        let is_active_item = self.workspace().is_none_or(|workspace| {
+            workspace.read(cx).active_item(cx).is_some_and(|item| {
+                item.item_id() == cx.entity_id()
+                    || item
+                        .act_as::<Editor>(cx)
+                        .is_some_and(|editor| editor.entity_id() == cx.entity_id())
+            })
+        });
+        let hotkeys = if is_active_item {
+            self.numbered_bookmark_hotkeys(cx)
+        } else {
+            Vec::new()
+        };
+        window.set_system_hotkeys_to_suppress(&hotkeys);
+    }
+
+    pub(crate) fn release_numbered_bookmark_hotkeys(&self, window: &mut Window) {
+        if cfg!(target_os = "macos") && self.bookmark_store.is_some() {
+            window.set_system_hotkeys_to_suppress(&[]);
         }
-        window.set_system_hotkeys_to_suppress(&self.numbered_bookmark_hotkeys(cx));
     }
 
     pub fn toggle_numbered_bookmark_0(

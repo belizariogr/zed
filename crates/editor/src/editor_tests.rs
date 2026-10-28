@@ -49703,23 +49703,34 @@ async fn test_numbered_bookmark_system_hotkeys_follow_active_tab(cx: &mut TestAp
         json!({ "main.rs": "first\nsecond\n", "other.rs": "other\n" }),
     )
     .await;
+    let toggle_numbers = (0..=9).map(|number| number.to_string()).collect::<Vec<_>>();
     let suppressed_numbers = |cx: &VisualTestContext| {
-        cx.suppressed_system_hotkeys()
-            .into_iter()
-            .map(|keystroke| {
-                assert_eq!(
-                    keystroke.modifiers,
-                    gpui::Modifiers {
-                        platform: true,
-                        ..gpui::Modifiers::none()
-                    }
-                );
-                keystroke.key
-            })
-            .collect::<Vec<_>>()
+        let mut toggles = Vec::new();
+        let mut jumps = Vec::new();
+        for keystroke in cx.suppressed_system_hotkeys() {
+            assert_eq!(
+                keystroke.modifiers,
+                gpui::Modifiers {
+                    platform: true,
+                    shift: keystroke.modifiers.shift,
+                    ..gpui::Modifiers::none()
+                }
+            );
+            if keystroke.modifiers.shift {
+                toggles.push(keystroke.key);
+            } else {
+                jumps.push(keystroke.key);
+            }
+        }
+        (toggles, jumps)
+    };
+    let focused_numbers = |cx: &VisualTestContext| {
+        let (toggles, jumps) = suppressed_numbers(cx);
+        assert_eq!(toggles, toggle_numbers);
+        jumps
     };
     cx.run_until_parked();
-    assert!(suppressed_numbers(&cx).is_empty());
+    assert!(focused_numbers(&cx).is_empty());
     first_editor.update_in(&mut cx, |editor, window, cx| {
         editor.toggle_numbered_bookmark_0(&crate::ToggleNumberedBookmark0, window, cx);
         editor.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
@@ -49728,16 +49739,16 @@ async fn test_numbered_bookmark_system_hotkeys_follow_active_tab(cx: &mut TestAp
         editor.toggle_numbered_bookmark_4(&crate::ToggleNumberedBookmark4, window, cx);
     });
     cx.run_until_parked();
-    assert_eq!(suppressed_numbers(&cx), ["0", "4"]);
+    assert_eq!(focused_numbers(&cx), ["0", "4"]);
 
     let second_editor = open_bookmarks_test_editor(&workspace, &project, "other.rs", &mut cx).await;
     cx.run_until_parked();
-    assert!(suppressed_numbers(&cx).is_empty());
+    assert!(focused_numbers(&cx).is_empty());
     second_editor.update_in(&mut cx, |editor, window, cx| {
         editor.toggle_numbered_bookmark_9(&crate::ToggleNumberedBookmark9, window, cx);
     });
     cx.run_until_parked();
-    assert_eq!(suppressed_numbers(&cx), ["9"]);
+    assert_eq!(focused_numbers(&cx), ["9"]);
 
     first_editor.update_in(&mut cx, |editor, window, cx| {
         editor.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
@@ -49746,24 +49757,37 @@ async fn test_numbered_bookmark_system_hotkeys_follow_active_tab(cx: &mut TestAp
         editor.toggle_numbered_bookmark_0(&crate::ToggleNumberedBookmark0, window, cx);
     });
     cx.run_until_parked();
-    assert_eq!(suppressed_numbers(&cx), ["9"]);
+    assert_eq!(focused_numbers(&cx), ["9"]);
     workspace.update_in(&mut cx, |workspace, window, cx| {
         assert!(workspace.activate_item(&first_editor, true, true, window, cx));
     });
     cx.run_until_parked();
-    assert_eq!(suppressed_numbers(&cx), ["4"]);
+    assert_eq!(focused_numbers(&cx), ["4"]);
 
-    cx.update(|window, cx| {
-        let focus_handle = cx.focus_handle();
-        window.focus(&focus_handle, cx);
+    workspace.update_in(&mut cx, |workspace, window, cx| {
+        let panel = cx.new(|cx| {
+            workspace::dock::test::TestPanel::new(workspace::dock::DockPosition::Left, 100, cx)
+        });
+        workspace.add_panel(panel, window, cx);
+        workspace.focus_panel::<workspace::dock::test::TestPanel>(window, cx);
     });
     cx.run_until_parked();
-    assert_eq!(suppressed_numbers(&cx), ["4"]);
+    assert_eq!(suppressed_numbers(&cx), (Vec::new(), Vec::new()));
     first_editor.update_in(&mut cx, |editor, window, cx| {
         editor.clear_numbered_bookmarks(&crate::ClearNumberedBookmarks, window, cx);
     });
     cx.run_until_parked();
-    assert!(suppressed_numbers(&cx).is_empty());
+    assert_eq!(suppressed_numbers(&cx), (Vec::new(), Vec::new()));
+
+    first_editor.update_in(&mut cx, |editor, window, cx| {
+        window.focus(&editor.focus_handle, cx);
+    });
+    cx.run_until_parked();
+    assert!(focused_numbers(&cx).is_empty());
+
+    cx.deactivate_window();
+    cx.run_until_parked();
+    assert_eq!(suppressed_numbers(&cx), (Vec::new(), Vec::new()));
 }
 
 async fn init_bookmarks_tab_test(

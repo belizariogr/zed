@@ -11075,7 +11075,11 @@ impl Editor {
     }
 
     fn handle_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.refresh_numbered_bookmark_hotkeys(window, cx);
+        // Deferred so it runs after the previously focused editor's blur handler
+        // releases its hotkeys, regardless of listener order.
+        cx.defer_in(window, |editor, window, cx| {
+            editor.refresh_numbered_bookmark_hotkeys(window, cx);
+        });
         self.cursor_animations.clear();
         cx.emit(EditorEvent::Focused);
 
@@ -11141,6 +11145,7 @@ impl Editor {
     }
 
     pub fn handle_blur(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.release_numbered_bookmark_hotkeys(window);
         self.cursor_animations.clear();
         self.blink_manager.update(cx, BlinkManager::disable);
         self.buffer

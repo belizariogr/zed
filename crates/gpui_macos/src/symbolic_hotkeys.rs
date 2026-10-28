@@ -102,18 +102,19 @@ fn should_suppress(key: &str, modifiers: u32, suppressed: &[Keystroke]) -> bool 
     if key.len() != 1 || !key.bytes().all(|byte| byte.is_ascii_digit()) {
         return false;
     }
-    if modifiers == COMMAND | SHIFT {
-        return true;
-    }
-    modifiers == COMMAND
-        && suppressed.iter().any(|keystroke| {
-            keystroke.key == key
-                && keystroke.modifiers.platform
-                && !keystroke.modifiers.shift
-                && !keystroke.modifiers.control
-                && !keystroke.modifiers.alt
-                && !keystroke.modifiers.function
-        })
+    let shift = match modifiers {
+        COMMAND => false,
+        modifiers if modifiers == COMMAND | SHIFT => true,
+        _ => return false,
+    };
+    suppressed.iter().any(|keystroke| {
+        keystroke.key == key
+            && keystroke.modifiers.platform
+            && keystroke.modifiers.shift == shift
+            && !keystroke.modifiers.control
+            && !keystroke.modifiers.alt
+            && !keystroke.modifiers.function
+    })
 }
 
 fn conflicting_ids(suppressed: &[Keystroke]) -> Vec<i32> {
@@ -325,21 +326,30 @@ mod tests {
     use super::*;
     use gpui::Modifiers;
 
-    #[test]
-    fn suppress_only_numbered_bookmark_shortcuts() {
-        let suppressed = [Keystroke {
+    fn keystroke(key: &str, shift: bool) -> Keystroke {
+        Keystroke {
             modifiers: Modifiers {
                 platform: true,
+                shift,
                 ..Modifiers::none()
             },
-            key: "4".into(),
+            key: key.into(),
             key_char: None,
-        }];
+        }
+    }
+
+    #[test]
+    fn suppress_only_requested_numbered_bookmark_shortcuts() {
+        let suppressed = [keystroke("4", false), keystroke("3", true)];
         for number in 0..=9 {
             let key = number.to_string();
-            assert!(should_suppress(&key, COMMAND | SHIFT, &[]));
-            assert_eq!(should_suppress(&key, COMMAND, &suppressed), number == 4);
+            assert!(!should_suppress(&key, COMMAND | SHIFT, &[]));
             assert!(!should_suppress(&key, COMMAND, &[]));
+            assert_eq!(should_suppress(&key, COMMAND, &suppressed), number == 4);
+            assert_eq!(
+                should_suppress(&key, COMMAND | SHIFT, &suppressed),
+                number == 3
+            );
             for extra_modifier in [CONTROL, OPTION, FUNCTION] {
                 assert!(!should_suppress(
                     &key,
