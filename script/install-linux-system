@@ -18,6 +18,9 @@ Builds Zed in release mode as the stable channel and installs it system-wide:
 If a remote server daemon is already running, it is stopped before the new
 binary is installed and started again afterward.
 
+Privileges are requested before building, and kept fresh while it runs, so the
+install step does not wait for a password after a long build.
+
 Environment:
   PREFIX               Install prefix (default: /usr)
   SUDO                 Privilege helper (default: sudo)
@@ -205,6 +208,30 @@ restart_remote_servers() {
   done
 }
 
+cleanup() {
+  if [[ -n "${sudo_keepalive_pid:-}" ]]; then
+    kill "$sudo_keepalive_pid" 2>/dev/null || true
+  fi
+  if [[ -n "${temp_dir:-}" ]]; then
+    rm -rf "$temp_dir"
+  fi
+}
+trap cleanup EXIT
+
+echo "==> Requesting privileges for the install step"
+if [[ "${SUDO##*/}" == sudo* ]]; then
+  "$SUDO" -v
+  # The build can outlast sudo's credential timeout, so refresh it until the
+  # script exits.
+  while kill -0 "$$" 2>/dev/null; do
+    "$SUDO" -n -v 2>/dev/null || true
+    sleep 50
+  done &
+  sudo_keepalive_pid=$!
+else
+  "$SUDO" true
+fi
+
 echo "==> Building Zed ${version} (${channel}) in release mode"
 cargo build --release --package zed --package cli
 # Separate invocation avoids feature unification pulling extra dynamic libs
@@ -263,7 +290,6 @@ if [[ ! -f "$icon_src" || ! -f "$icon_src_2x" ]]; then
 fi
 
 temp_dir="$(mktemp -d)"
-trap 'rm -rf "$temp_dir"' EXIT
 
 stripped_remote_server="${temp_dir}/remote_server"
 strip_remote_server "$remote_server_bin" "$stripped_remote_server"
