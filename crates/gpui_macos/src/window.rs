@@ -1851,7 +1851,7 @@ impl PlatformWindow for MacWindow {
     fn set_system_hotkeys_to_suppress(&self, keystrokes: &[Keystroke]) {
         let mut state = self.0.lock();
         state.suppressed_system_hotkeys = keystrokes.to_vec();
-        if unsafe { state.native_window.isKeyWindow() == YES } {
+        if state.native_window().isKeyWindow() {
             crate::symbolic_hotkeys::set_window_hotkeys(state.handle.window_id(), Some(keystrokes));
         }
     }
