@@ -116,8 +116,10 @@ jobs:
         include:
         - arch: x86_64
           os: ubuntu-22.04
+        # The prebuilt aarch64 libwebrtc uses SME routines (__arm_tpidr2_save)
+        # that only GCC 14's libgcc provides, which Ubuntu 22.04 lacks.
         - arch: aarch64
-          os: ubuntu-22.04-arm
+          os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
     timeout-minutes: 360
     env:
