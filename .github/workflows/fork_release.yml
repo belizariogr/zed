@@ -157,23 +157,16 @@ jobs:
         # Matches AppVersion::load(): the build id and commit come from GITHUB_RUN_NUMBER and HEAD.
         echo "${version}+stable.${GITHUB_RUN_NUMBER}.$(git rev-parse HEAD)" >"$stage/zed.app/remote-server-version"
         tar -czf "dist/zed-linux-${{ matrix.arch }}.tar.gz" -C "$stage" zed.app
-        echo "$version" >dist/version
     - name: Upload archive
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: zed-linux-${{ matrix.arch }}.tar.gz
         path: dist/zed-linux-${{ matrix.arch }}.tar.gz
         if-no-files-found: error
-    - name: Upload version
-      if: matrix.arch == 'x86_64'
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: version
-        path: dist/version
-        if-no-files-found: error
 
   publish:
-    if: github.event_name == 'push' || inputs.publish
+    # Publish whichever platforms built; a failed platform must not hold back the others.
+    if: ${{ !cancelled() && (github.event_name == 'push' || inputs.publish) }}
     needs:
     - bundle_mac
     - bundle_linux
@@ -192,27 +185,48 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        version="$(cat artifacts/version)"
+        version="$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/zed/Cargo.toml | head -n 1)"
         if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
           tag="$GITHUB_REF_NAME"
         else
           tag="fork-v${version}-${GITHUB_RUN_NUMBER}"
         fi
-        cp script/install-linux-release artifacts/install-zed-linux.sh
-        cat >"$RUNNER_TEMP/notes.md" <<EOF
-        Zed ${version} (fork build ${GITHUB_RUN_NUMBER}, ${GITHUB_SHA})
 
-        - macOS: open \`Zed-aarch64.dmg\` (Apple Silicon) or \`Zed-x86_64.dmg\` (Intel) and drag Zed to Applications.
-        - Linux: \`curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/install-zed-linux.sh | ZED_RELEASE_TAG=${tag} bash\`
-        EOF
+        files=()
+        missing=()
+        for asset in Zed-aarch64.dmg Zed-x86_64.dmg zed-linux-x86_64.tar.gz zed-linux-aarch64.tar.gz; do
+          if [[ -f "artifacts/${asset}" ]]; then
+            files+=("artifacts/${asset}")
+          else
+            missing+=("${asset}")
+          fi
+        done
+        if ((${#files[@]} == 0)); then
+          echo "::error::No platform built successfully; nothing to publish."
+          exit 1
+        fi
+
+        notes="$RUNNER_TEMP/notes.md"
+        echo "Zed ${version} (fork build ${GITHUB_RUN_NUMBER}, ${GITHUB_SHA})" >"$notes"
+        echo >>"$notes"
+        if [[ -f artifacts/Zed-aarch64.dmg || -f artifacts/Zed-x86_64.dmg ]]; then
+          echo "- macOS: open \`Zed-aarch64.dmg\` (Apple Silicon) or \`Zed-x86_64.dmg\` (Intel) and drag Zed to Applications." >>"$notes"
+        fi
+        if [[ -f artifacts/zed-linux-x86_64.tar.gz || -f artifacts/zed-linux-aarch64.tar.gz ]]; then
+          cp script/install-linux-release artifacts/install-zed-linux.sh
+          files+=(artifacts/install-zed-linux.sh)
+          echo "- Linux: \`curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/install-zed-linux.sh | ZED_RELEASE_TAG=${tag} bash\`" >>"$notes"
+        fi
+        if ((${#missing[@]} > 0)); then
+          echo >>"$notes"
+          echo "Not included because the build failed: ${missing[*]}" >>"$notes"
+          echo "::warning::Publishing without ${missing[*]}"
+        fi
+
         gh release create "$tag" \
           --repo "$GITHUB_REPOSITORY" \
           --target "$GITHUB_SHA" \
           --title "Zed ${version} (fork ${GITHUB_RUN_NUMBER})" \
-          --notes-file "$RUNNER_TEMP/notes.md" \
+          --notes-file "$notes" \
           --latest \
-          artifacts/Zed-aarch64.dmg \
-          artifacts/Zed-x86_64.dmg \
-          artifacts/zed-linux-x86_64.tar.gz \
-          artifacts/zed-linux-aarch64.tar.gz \
-          artifacts/install-zed-linux.sh
+          "${files[@]}"
