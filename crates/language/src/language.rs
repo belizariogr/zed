@@ -15,6 +15,7 @@ mod language_registry;
 pub mod language_settings;
 mod manifest;
 pub mod modeline;
+mod on_enter;
 mod outline;
 pub mod proto;
 mod runnable;
@@ -53,9 +54,10 @@ use language_core::highlight_map::HighlightCaptureRef;
 pub use language_core::{
     BlockCommentConfig, BracketPair, BracketPairConfig, BracketPairContent, BracketsConfig,
     BracketsPatternConfig, CodeLabel, CodeLabelBuilder, DebugVariablesConfig, DebuggerTextObject,
-    DecreaseIndentConfig, Grammar, GrammarId, HighlightsConfig, IndentConfig, InjectionConfig,
-    InjectionPatternConfig, JsxTagAutoCloseConfig, LanguageConfig, LanguageConfigOverride,
-    LanguageId, LanguageMatcher, OrderedListConfig, OutlineConfig, Override, OverrideConfig,
+    DecreaseIndentConfig, EmbeddedOnEnterConfig, Grammar, GrammarId, HighlightsConfig,
+    IndentConfig, IndentationRules, InjectionConfig, InjectionPatternConfig, JsxTagAutoCloseConfig,
+    LanguageConfig, LanguageConfigOverride, LanguageId, LanguageMatcher, OnEnterConfig,
+    OnEnterIndent, OnEnterRule, OrderedListConfig, OutlineConfig, Override, OverrideConfig,
     OverrideEntry, RedactionConfig, RunnableCapture, RunnableConfig, SoftWrap, Symbol,
     TaskListConfig, TextObject, TextObjectConfig, WrapCharactersConfig, default_true,
     deserialize_regex, deserialize_regex_vec, regex_json_schema, regex_vec_json_schema,
@@ -116,6 +118,7 @@ pub use language_registry::{
     QueryFileContents, QueryFiles,
 };
 pub use lsp::{LanguageServerId, LanguageServerName};
+pub use on_enter::OnEnterEdit;
 pub use outline::*;
 pub use syntax_map::{
     OwnedSyntaxLayer, SyntaxLayer, SyntaxMapMatches, ToTreeSitterPoint, TreeSitterOptions,

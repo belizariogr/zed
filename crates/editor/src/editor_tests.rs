@@ -6320,6 +6320,368 @@ async fn test_newline_twice_inside_block(cx: &mut TestAppContext) {
     cx.assert_editor_state("func test() {\n\n    ˇ\n}");
 }
 
+async fn assert_newline_cases(
+    cx: &mut TestAppContext,
+    language: Arc<Language>,
+    tab_size: u32,
+    cases: &[(&str, &str)],
+) {
+    init_test(cx, |_| {});
+    update_test_language_settings(cx, &move |settings| {
+        settings.defaults.tab_size = NonZeroU32::new(tab_size);
+    });
+    for (before, after) in cases {
+        let mut cx = EditorTestContext::new(cx).await;
+        cx.update_buffer(|buffer, cx| buffer.set_language(Some(language.clone()), cx));
+        cx.set_state(before);
+        cx.run_until_parked();
+        cx.update_editor(|editor, window, cx| editor.newline(&Newline, window, cx));
+        cx.assert_editor_state(after);
+    }
+}
+
+#[gpui::test]
+async fn test_newline_vscode_enter_rules_typescript(cx: &mut TestAppContext) {
+    assert_newline_cases(
+        cx,
+        language(
+            "typescript",
+            tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        ),
+        2,
+        &[
+            // open block unclosed
+            ("function f() {ˇ", "function f() {\n  ˇ"),
+            // between braces
+            ("function f() {ˇ}", "function f() {\n  ˇ\n}"),
+            // statement in block
+            (
+                "function f() {\n  foo();ˇ\n}",
+                "function f() {\n  foo();\n  ˇ\n}",
+            ),
+            // after closing brace
+            (
+                "function f() {\n  if (x) {\n    foo();\n  }ˇ\n}",
+                "function f() {\n  if (x) {\n    foo();\n  }\n  ˇ\n}",
+            ),
+            // unclosed call args
+            ("const x = foo(a,ˇ", "const x = foo(a,\n  ˇ"),
+            // nested unclosed
+            (
+                "const x = foo(bar(1,\n  2),ˇ",
+                "const x = foo(bar(1,\n  2),\n  ˇ",
+            ),
+            // if without braces
+            ("if (x)ˇ", "if (x)\n  ˇ"),
+            // after braceless if body
+            ("if (x)\n  foo();ˇ", "if (x)\n  foo();\nˇ"),
+            // after arrow
+            ("const f = () =>ˇ", "const f = () =>\n  ˇ"),
+            // after arrow body
+            ("const f = () =>\n  foo;ˇ", "const f = () =>\n  foo;\nˇ"),
+            // unindented blank line in block
+            (
+                "function f() {\n  foo();\nˇ\n}",
+                "function f() {\n  foo();\n\n  ˇ\n}",
+            ),
+            // jsdoc open
+            ("/**ˇ */", "/**\n * ˇ\n */"),
+            // jsdoc continue
+            ("/**\n * fooˇ", "/**\n * foo\n * ˇ"),
+            // jsdoc close
+            ("  /**\n   * foo\n   */ˇ", "  /**\n   * foo\n   */\n  ˇ"),
+            // middle of args
+            ("foo(a, ˇb);", "foo(a, \n  ˇb);"),
+            // between parens
+            ("foo(ˇ)", "foo(\n  ˇ\n)"),
+            // switch case
+            (
+                "switch (x) {\n  case 1:ˇ\n}",
+                "switch (x) {\n  case 1:\n    ˇ\n}",
+            ),
+            // chained call close
+            (
+                "promise\n  .then(() => {\n    foo();\n  })ˇ",
+                "promise\n  .then(() => {\n    foo();\n  })\n  ˇ",
+            ),
+            // incomplete nested block
+            (
+                "function f() {\n  if (x) {ˇ\n}",
+                "function f() {\n  if (x) {\n    ˇ\n}",
+            ),
+            // brace in string
+            (
+                "function f() {\n  const s = \"{\";ˇ\n}",
+                "function f() {\n  const s = \"{\";\n  ˇ\n}",
+            ),
+            // before closing brace
+            ("function f() {\n  foo();ˇ}", "function f() {\n  foo();\nˇ}"),
+            // unclosed array
+            ("const a = [\n  1,\n  2,ˇ", "const a = [\n  1,\n  2,\n  ˇ"),
+            // braceless else
+            ("if (x)\n  foo();\nelseˇ", "if (x)\n  foo();\nelse\n  ˇ"),
+            // nested object close
+            (
+                "const o = {\n  a: 1,\n  b: {\n    c: 2,\n  },ˇ\n}",
+                "const o = {\n  a: 1,\n  b: {\n    c: 2,\n  },\n  ˇ\n}",
+            ),
+            // after multiline call
+            ("foo(\n  a,\n  b\n);ˇ", "foo(\n  a,\n  b\n);\nˇ"),
+            // multiline if then brace
+            ("if (\n  a &&\n  b\n) {ˇ", "if (\n  a &&\n  b\n) {\n  ˇ"),
+            // member chain line
+            ("const x = a\n  .b()ˇ", "const x = a\n  .b()\n  ˇ"),
+            // binary continuation
+            (
+                "function f() {\n  return a +ˇ\n}",
+                "function f() {\n  return a +\n  ˇ\n}",
+            ),
+            // object unclosed
+            ("const x = {ˇ", "const x = {\n  ˇ"),
+            // brace in trailing comment
+            (
+                "function f() {\n  foo(); // {ˇ\n}",
+                "function f() {\n  foo(); // {\n  ˇ\n}",
+            ),
+            // single line if
+            ("if (x) foo();ˇ", "if (x) foo();\nˇ"),
+            // between if parens
+            ("if (ˇ)", "if (\n  ˇ\n)"),
+            // after equals
+            ("const x =ˇ", "const x =\nˇ"),
+            // at start of content
+            (
+                "function f() {\n  ˇfoo();\n}",
+                "function f() {\n\n  ˇfoo();\n}",
+            ),
+            // indent before closing brace
+            (
+                "function f() {\n  foo();\n  ˇ}",
+                "function f() {\n  foo();\n\nˇ}",
+            ),
+            // after call with callback
+            (
+                "describe('x', () => {\n  it('y', () => {\n    expect(1);\n  });ˇ\n});",
+                "describe('x', () => {\n  it('y', () => {\n    expect(1);\n  });\n  ˇ\n});",
+            ),
+            // import list
+            ("import {ˇ} from 'x';", "import {\n  ˇ\n} from 'x';"),
+            // generic arrow param
+            (
+                "const f = <T,>(a: T) => {ˇ",
+                "const f = <T,>(a: T) => {\n  ˇ",
+            ),
+            // after multiline arrow param list
+            (
+                "const f = (\n  a: number,\n) => {ˇ",
+                "const f = (\n  a: number,\n) => {\n  ˇ",
+            ),
+        ],
+    )
+    .await;
+}
+
+#[gpui::test]
+async fn test_newline_vscode_enter_rules_typescript_vscode_tests(cx: &mut TestAppContext) {
+    // Ported from the on-enter cases in VS Code's `indentation.test.ts`.
+    assert_newline_cases(
+        cx,
+        language("typescript", tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
+        4,
+        &[
+            // #208215 arrow
+            ("const add1 = (n) =>ˇ", "const add1 = (n) =>\n    ˇ"),
+            // #208215 arrow 2
+            ("const array = [1, 2, 3, 4, 5];\narray.map(\n    v =>ˇ", "const array = [1, 2, 3, 4, 5];\narray.map(\n    v =>\n        ˇ"),
+            // #116843 after arrow body
+            ("const add1 = (n) =>\n    n + 1;ˇ", "const add1 = (n) =>\n    n + 1;\nˇ"),
+            // #29755 column 0 of indented line
+            ("function f() {\n    const one = 1;\nˇ    const two = 2;\n}", "function f() {\n    const one = 1;\n\nˇ    const two = 2;\n}"),
+            // #36090
+            ("class ItemCtrl {\n    getPropertiesByItemId(id) {\n        return this.fetchItem(id)\n            .then(item => {\n                return this.getPropertiesOfItem(item);\n            });\n    }ˇ\n}", "class ItemCtrl {\n    getPropertiesByItemId(id) {\n        return this.fetchItem(id)\n            .then(item => {\n                return this.getPropertiesOfItem(item);\n            });\n    }\n    ˇ\n}"),
+            // #115304 block comment
+            ("/**ˇ */\nfunction f() {}", "/**\n * ˇ\n */\nfunction f() {}"),
+            // #43244 lambda
+            ("const array = [1, 2, 3, 4, 5];\narray.map(_ˇ)", "const array = [1, 2, 3, 4, 5];\narray.map(_\n    ˇ\n)"),
+            // #43244 braceless if
+            ("function f() {\n    if (condition)ˇ\n}", "function f() {\n    if (condition)\n        ˇ\n}"),
+            // #43244 braceless if body
+            ("function f() {\n    if (condition)\n        return;ˇ\n}", "function f() {\n    if (condition)\n        return;\n    ˇ\n}"),
+            // #208232 brace in comment
+            ("/**\nindentation done for {ˇ\n*/", "/**\nindentation done for {\nˇ\n*/"),
+            // #209802 allman condition
+            ("if (/*condition*/)ˇ", "if (/*condition*/)\n    ˇ"),
+            // #209802 allman brace
+            ("if (/*condition*/)\n{ˇ}", "if (/*condition*/)\n{\n    ˇ\n}"),
+            // middle of indentation
+            ("function f() {\n  ˇ  foo();\n}", "function f() {\n  \n  ˇ  foo();\n}"),
+        ],
+    )
+    .await;
+}
+
+#[gpui::test]
+async fn test_newline_vscode_enter_rules_javascript(cx: &mut TestAppContext) {
+    assert_newline_cases(
+        cx,
+        language("javascript", tree_sitter_typescript::LANGUAGE_TSX.into()),
+        2,
+        &[
+            // between braces
+            ("function f() {ˇ}", "function f() {\n  ˇ\n}"),
+            // braceless if body
+            ("if (x)\n  foo();ˇ", "if (x)\n  foo();\nˇ"),
+            // chained close
+            (
+                "promise\n  .then(() => {\n    foo();\n  })ˇ",
+                "promise\n  .then(() => {\n    foo();\n  })\n  ˇ",
+            ),
+            // after equals
+            ("const x =ˇ", "const x =\nˇ"),
+            // switch case
+            (
+                "switch (x) {\n  case 1:ˇ\n}",
+                "switch (x) {\n  case 1:\n    ˇ\n}",
+            ),
+        ],
+    )
+    .await;
+}
+
+#[gpui::test]
+async fn test_newline_vscode_enter_rules_tsx(cx: &mut TestAppContext) {
+    assert_newline_cases(
+        cx,
+        language("tsx", tree_sitter_typescript::LANGUAGE_TSX.into()),
+        2,
+        &[
+            // jsx between tags
+            (
+                "return (\n  <div>ˇ</div>\n);",
+                "return (\n  <div>\n    ˇ\n  </div>\n);",
+            ),
+            // jsx after child
+            (
+                "return (\n  <div>\n    <span>hi</span>ˇ\n  </div>\n);",
+                "return (\n  <div>\n    <span>hi</span>\n    ˇ\n  </div>\n);",
+            ),
+            // jsx after closing
+            (
+                "return (\n  <div>\n    <span>hi</span>\n  </div>ˇ\n);",
+                "return (\n  <div>\n    <span>hi</span>\n  </div>\n  ˇ\n);",
+            ),
+            // jsx unclosed open
+            ("return (\n  <div>ˇ\n);", "return (\n  <div>\n    ˇ\n);"),
+            // jsx attribute
+            (
+                "const a = (\n  <Foo\n    a=\"1\"ˇ\n  />\n);",
+                "const a = (\n  <Foo\n    a=\"1\"\n    ˇ\n  />\n);",
+            ),
+            // tsx block
+            ("function f() {ˇ}", "function f() {\n  ˇ\n}"),
+            // tsx braceless if body
+            ("if (x)\n  foo();ˇ", "if (x)\n  foo();\nˇ"),
+        ],
+    )
+    .await;
+}
+
+#[gpui::test]
+async fn test_newline_vscode_enter_rules_json(cx: &mut TestAppContext) {
+    assert_newline_cases(
+        cx,
+        language::json_lang(),
+        2,
+        &[
+            // between braces
+            ("{ˇ}", "{\n  ˇ\n}"),
+            // after property
+            ("{\n  \"a\": 1,ˇ\n}", "{\n  \"a\": 1,\n  ˇ\n}"),
+            // nested open
+            ("{\n  \"a\": {ˇ\n}", "{\n  \"a\": {\n    ˇ\n}"),
+            // after array close
+            (
+                "{\n  \"a\": [\n    1\n  ],ˇ\n}",
+                "{\n  \"a\": [\n    1\n  ],\n  ˇ\n}",
+            ),
+            // brace in string
+            ("{\n  \"a\": \"{\",ˇ\n}", "{\n  \"a\": \"{\",\n  ˇ\n}"),
+            // between brackets
+            ("[ˇ]", "[\n  ˇ\n]"),
+            // before closing brace
+            ("{\n  \"a\": 1ˇ}", "{\n  \"a\": 1\nˇ}"),
+        ],
+    )
+    .await;
+}
+
+#[gpui::test]
+async fn test_newline_vscode_enter_rules_rust(cx: &mut TestAppContext) {
+    assert_newline_cases(
+        cx,
+        rust_lang(),
+        4,
+        &[
+            // between braces
+            ("fn main() {ˇ}", "fn main() {\n    ˇ\n}"),
+            // statement in block
+            ("fn main() {\n    let x = 1;ˇ\n}", "fn main() {\n    let x = 1;\n    ˇ\n}"),
+            // after closing brace
+            ("fn main() {\n    if x {\n        foo();\n    }ˇ\n}", "fn main() {\n    if x {\n        foo();\n    }\n    ˇ\n}"),
+            // between brackets
+            ("let v = vec![ˇ];", "let v = vec![\n    ˇ\n];"),
+            // unclosed args
+            ("fn main() {\n    let x = foo(a,ˇ\n}", "fn main() {\n    let x = foo(a,\n        ˇ\n}"),
+            // method chain
+            ("fn main() {\n    let x = foo\n        .bar()ˇ\n}", "fn main() {\n    let x = foo\n        .bar()\n        ˇ\n}"),
+            // match arm arrow
+            ("match x {\n    1 =>ˇ\n}", "match x {\n    1 =>\n    ˇ\n}"),
+            // brace in string
+            ("fn main() {\n    let s = \"{\";ˇ\n}", "fn main() {\n    let s = \"{\";\n    ˇ\n}"),
+            // after let equals
+            ("fn main() {\n    let x =ˇ\n}", "fn main() {\n    let x =\n    ˇ\n}"),
+            // after match arm block
+            ("fn main() {\n    match x {\n        1 => {\n            a();\n        }ˇ\n    }\n}", "fn main() {\n    match x {\n        1 => {\n            a();\n        }\n        ˇ\n    }\n}"),
+        ],
+    )
+    .await;
+}
+
+#[gpui::test]
+async fn test_newline_vscode_enter_rules_with_tabs_and_selections(cx: &mut TestAppContext) {
+    init_test(cx, |settings| {
+        settings.defaults.hard_tabs = Some(true);
+        settings.defaults.tab_size = NonZeroU32::new(4);
+    });
+    let mut cx = EditorTestContext::new(cx).await;
+    cx.update_buffer(|buffer, cx| buffer.set_language(Some(rust_lang()), cx));
+
+    cx.set_state("fn main() {ˇ}");
+    cx.run_until_parked();
+    cx.update_editor(|editor, window, cx| editor.newline(&Newline, window, cx));
+    cx.assert_editor_state("fn main() {\n\tˇ\n}");
+
+    // The selection is replaced, and each cursor gets its own indentation.
+    cx.set_state("fn main() {\n\tfoo(«a, bˇ»);\n\tif x {ˇ}\n}");
+    cx.run_until_parked();
+    cx.update_editor(|editor, window, cx| editor.newline(&Newline, window, cx));
+    cx.assert_editor_state("fn main() {\n\tfoo(\n\t\tˇ\n\t);\n\tif x {\n\t\tˇ\n\t}\n}");
+
+    cx.update_buffer(|buffer, cx| {
+        buffer.set_language(
+            Some(language(
+                "typescript",
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            )),
+            cx,
+        )
+    });
+    cx.set_state("function f() {\n\t/**ˇ */\n}");
+    cx.run_until_parked();
+    cx.update_editor(|editor, window, cx| editor.newline(&Newline, window, cx));
+    cx.assert_editor_state("function f() {\n\t/**\n\t * ˇ\n\t */\n}");
+}
+
 #[gpui::test]
 async fn test_newline_comments_with_block_comment(cx: &mut TestAppContext) {
     init_test(cx, |settings| {

@@ -66,6 +66,11 @@ pub struct LanguageConfig {
     /// outdenting, like aligning an `else` with its `if`.
     #[serde(default)]
     pub decrease_indent_patterns: Vec<DecreaseIndentConfig>,
+    /// VS Code-compatible rules that decide the indentation of the line created by
+    /// pressing enter. When present, they replace the syntax-based indentation for
+    /// newlines.
+    #[serde(default)]
+    pub on_enter: Option<OnEnterConfig>,
     /// A list of characters that trigger the automatic insertion of a closing
     /// bracket when they immediately precede the point where an opening
     /// bracket is inserted.
@@ -175,6 +180,7 @@ impl Default for LanguageConfig {
             increase_indent_pattern: Default::default(),
             decrease_indent_pattern: Default::default(),
             decrease_indent_patterns: Default::default(),
+            on_enter: None,
             autoclose_before: Default::default(),
             line_comments: Default::default(),
             block_comment: Default::default(),
@@ -208,6 +214,95 @@ pub struct DecreaseIndentConfig {
     pub pattern: Option<Regex>,
     #[serde(default)]
     pub valid_after: Vec<String>,
+}
+
+/// Mirrors VS Code's `onEnterRules`, `indentationRules` and `brackets` language
+/// configuration, which together decide the indentation after pressing enter.
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+pub struct OnEnterConfig {
+    /// Bracket pairs as `[open, close]`. Pressing enter after an open bracket indents
+    /// the new line, and pressing it between a pair also moves the close bracket to
+    /// its own line. Brackets inside strings and comments are ignored.
+    #[serde(default)]
+    pub brackets: Vec<[String; 2]>,
+    /// Rules tried in order before the bracket and indentation rules.
+    #[serde(default)]
+    pub rules: Vec<OnEnterRule>,
+    /// Regexes that infer the indentation of the new line from the lines above it.
+    #[serde(default)]
+    pub indentation_rules: Option<IndentationRules>,
+    /// Syntax nodes that use their own rules, like JSX tags inside JavaScript.
+    #[serde(default)]
+    pub embedded: Vec<EmbeddedOnEnterConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+pub struct EmbeddedOnEnterConfig {
+    /// Positions inside nodes of these kinds use this configuration.
+    pub node_kinds: Vec<String>,
+    /// Positions inside nodes of these kinds, nested in `node_kinds`, return to the
+    /// configuration of the surrounding language.
+    #[serde(default)]
+    pub exit_node_kinds: Vec<String>,
+    #[serde(flatten)]
+    pub config: OnEnterConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+pub struct IndentationRules {
+    /// The lines after a matching line are indented one more level.
+    #[serde(default, deserialize_with = "deserialize_fancy_regex")]
+    #[schemars(schema_with = "regex_json_schema")]
+    pub increase_indent_pattern: Option<fancy_regex::Regex>,
+    /// A matching line is indented one level less than the lines above it.
+    #[serde(default, deserialize_with = "deserialize_fancy_regex")]
+    #[schemars(schema_with = "regex_json_schema")]
+    pub decrease_indent_pattern: Option<fancy_regex::Regex>,
+    /// Only the line after a matching line is indented one more level.
+    #[serde(default, deserialize_with = "deserialize_fancy_regex")]
+    #[schemars(schema_with = "regex_json_schema")]
+    pub indent_next_line_pattern: Option<fancy_regex::Regex>,
+    /// Matching lines are skipped when inferring the indentation from the lines above.
+    #[serde(default, deserialize_with = "deserialize_fancy_regex")]
+    #[schemars(schema_with = "regex_json_schema")]
+    pub unindented_line_pattern: Option<fancy_regex::Regex>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+pub struct OnEnterRule {
+    /// Matched against the text before the cursor on the current line.
+    #[serde(deserialize_with = "deserialize_required_fancy_regex")]
+    #[schemars(schema_with = "regex_json_schema")]
+    pub before_text: fancy_regex::Regex,
+    /// Matched against the text after the cursor on the current line.
+    #[serde(default, deserialize_with = "deserialize_fancy_regex")]
+    #[schemars(schema_with = "regex_json_schema")]
+    pub after_text: Option<fancy_regex::Regex>,
+    /// Matched against the line above the cursor.
+    #[serde(default, deserialize_with = "deserialize_fancy_regex")]
+    #[schemars(schema_with = "regex_json_schema")]
+    pub previous_line_text: Option<fancy_regex::Regex>,
+    pub indent: OnEnterIndent,
+    /// Text appended to the new line after its indentation.
+    #[serde(default)]
+    pub append_text: Option<String>,
+    /// Number of characters removed from the indentation of the new line.
+    #[serde(default)]
+    pub remove_text: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OnEnterIndent {
+    /// Keep the indentation of the current line.
+    None,
+    /// Indent the new line one level more than the current line.
+    Indent,
+    /// Indent the new line, and move the text after the cursor to another line
+    /// with the indentation of the current line.
+    IndentOutdent,
+    /// Indent the new line one level less than the current line.
+    Outdent,
 }
 
 /// Configuration for continuing ordered lists with auto-incrementing numbers.
@@ -495,6 +590,21 @@ pub fn deserialize_regex<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Regex
     } else {
         Ok(None)
     }
+}
+
+fn deserialize_fancy_regex<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<fancy_regex::Regex>, D::Error> {
+    Option::<String>::deserialize(d)?
+        .map(|source| fancy_regex::Regex::new(&source).map_err(de::Error::custom))
+        .transpose()
+}
+
+fn deserialize_required_fancy_regex<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<fancy_regex::Regex, D::Error> {
+    let source = String::deserialize(d)?;
+    fancy_regex::Regex::new(&source).map_err(de::Error::custom)
 }
 
 pub fn regex_json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {

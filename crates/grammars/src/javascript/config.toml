@@ -42,3 +42,107 @@ opt_into_language_servers = ["emmet-language-server"]
 [overrides.string]
 completion_query_characters = ["-", "."]
 opt_into_language_servers = ["tailwindcss-language-server"]
+
+# The enter indentation of VS Code's JavaScript and TypeScript language configuration.
+[on_enter]
+brackets = [["${", "}"], ["{", "}"], ["[", "]"], ["(", ")"]]
+
+[on_enter.indentation_rules]
+increase_indent_pattern = '^.*(\{[^}]*|\([^)]*|\[[^\]]*)$'
+decrease_indent_pattern = '^\s*[\}\]\)].*$'
+# e.g.  * ...| or */| or *-----*/|
+unindented_line_pattern = '^(\t|[ ])*[ ]\*[^/]*\*/\s*$|^(\t|[ ])*[ ]\*/\s*$|^(\t|[ ])*\*([ ]([^\*]|\*(?!/))*)?$'
+indent_next_line_pattern = '^((.*=>\s*)|((.*[^\w]+|\s*)((if|while|for)\s*\(.*\)\s*|else\s*)))$'
+
+# e.g. /** | */
+[[on_enter.rules]]
+before_text = '^\s*/\*\*(?!/)([^\*]|\*(?!/))*$'
+after_text = '^\s*\*/$'
+indent = "indent_outdent"
+append_text = " * "
+
+# e.g. /** ...|
+[[on_enter.rules]]
+before_text = '^\s*/\*\*(?!/)([^\*]|\*(?!/))*$'
+indent = "none"
+append_text = " * "
+
+# e.g.  * ...|
+[[on_enter.rules]]
+before_text = '^(\t|[ ])*\*([ ]([^\*]|\*(?!/))*)?$'
+previous_line_text = '(?=^(\s*(/\*\*|\*)).*)(?=(?!(\s*\*/)))'
+indent = "none"
+append_text = "* "
+
+# e.g.  */|
+[[on_enter.rules]]
+before_text = '^(\t|[ ])*[ ]\*/\s*$'
+indent = "none"
+remove_text = 1
+
+# e.g.  *-----*/|
+[[on_enter.rules]]
+before_text = '^(\t|[ ])*[ ]\*[^/]*\*/\s*$'
+indent = "none"
+remove_text = 1
+
+[[on_enter.rules]]
+before_text = '^\s*(\bcase\s.+:|\bdefault:)$'
+after_text = '^(?!\s*(\bcase\b|\bdefault\b))'
+indent = "indent"
+
+# Decrease indentation after a single line if/else if/else, for, or while, unless the
+# line has braces or is another if statement.
+[[on_enter.rules]]
+previous_line_text = '^\s*(((else ?)?if|for|while)\s*\(.*\)\s*|else\s*)$'
+before_text = '^\s+([^{i\s]|i(?!f\b))'
+indent = "outdent"
+
+[[on_enter.rules]]
+before_text = '^.*\([^\)]*$'
+after_text = '^\s*\).*$'
+indent = "indent_outdent"
+append_text = "\t"
+
+[[on_enter.rules]]
+before_text = '^.*\{[^\}]*$'
+after_text = '^\s*\}.*$'
+indent = "indent_outdent"
+append_text = "\t"
+
+[[on_enter.rules]]
+before_text = '^.*\[[^\]]*$'
+after_text = '^\s*\].*$'
+indent = "indent_outdent"
+append_text = "\t"
+
+# Continue a line comment when pressing enter in the middle of it.
+[[on_enter.rules]]
+before_text = '^\s*//\s*\S|\s//\s+\S'
+after_text = '^(?!\s*$)'
+indent = "none"
+append_text = "// "
+
+# VS Code's `jsx-tags` language configuration, used inside JSX tags.
+[[on_enter.embedded]]
+node_kinds = ["jsx_opening_element", "jsx_closing_element", "jsx_self_closing_element"]
+exit_node_kinds = ["jsx_attribute", "jsx_expression"]
+brackets = [["{", "}"], ["[", "]"], ["(", ")"], ["<", ">"]]
+
+[[on_enter.embedded.rules]]
+before_text = '(?i)<(?!(?:area|base|br|col|embed|hr|img|input|keygen|link|menuitem|meta|param|source|track|wbr))([_:\w][_:\w\-.\d]*)([^/>]*(?!/)>)[^<]*$'
+after_text = '(?i)^</([_:\w][_:\w\-.\d]*)\s*>$'
+indent = "indent_outdent"
+
+[[on_enter.embedded.rules]]
+before_text = '(?i)<(?!(?:area|base|br|col|embed|hr|img|input|keygen|link|menuitem|meta|param|source|track|wbr))([_:\w][_:\w\-.\d]*)([^/>]*(?!/)>)[^<]*$'
+indent = "indent"
+
+[[on_enter.embedded.rules]]
+before_text = '^>$'
+after_text = '(?i)^</([_:\w][_:\w\-.\d]*)\s*>$'
+indent = "indent_outdent"
+
+[[on_enter.embedded.rules]]
+before_text = '^>$'
+indent = "indent"

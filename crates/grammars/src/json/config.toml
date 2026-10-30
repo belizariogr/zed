@@ -16,3 +16,18 @@ word_characters = ["#"]
 
 [overrides.string]
 completion_query_characters = [":", " ", "."]
+
+# The enter indentation of VS Code's JSON language configuration.
+[on_enter]
+brackets = [["{", "}"], ["[", "]"]]
+
+[on_enter.indentation_rules]
+increase_indent_pattern = '(\{+(?=((\\.|[^"\\])*"(\\.|[^"\\])*")*[^"}]*)$)|(\[+(?=((\\.|[^"\\])*"(\\.|[^"\\])*")*[^"\]]*)$)'
+decrease_indent_pattern = '^\s*[}\]],?\s*$'
+
+# Continue a line comment when pressing enter in the middle of it.
+[[on_enter.rules]]
+before_text = '^\s*//\s*\S|\s//\s+\S'
+after_text = '^(?!\s*$)'
+indent = "none"
+append_text = "// "

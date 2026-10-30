@@ -628,6 +628,16 @@ impl Editor {
                                 );
                             }) {
                                 delimiter = Some(doc_delimiter);
+                            } else if let Some(on_enter_config) = maybe!({
+                                if buffer.language_settings_at(start, cx).auto_indent
+                                    != language::AutoIndentMode::SyntaxAware
+                                {
+                                    return None;
+                                }
+
+                                on_enter_for_newline(start..end, &buffer, cx)
+                            }) {
+                                newline_config = on_enter_config;
                             } else if let Some(list_delimiter) = maybe!({
                                 if !selection_is_empty {
                                     return None;
@@ -659,11 +669,24 @@ impl Editor {
                             )
                         };
 
+                        let mut edit_end = end;
                         let (edit_start, new_text, prevent_auto_indent) = match &newline_config {
                             NewlineConfig::ClearCurrentLine => {
                                 let row_start =
                                     buffer.point_to_offset(Point::new(start_point.row, 0));
                                 (row_start, String::new(), false)
+                            }
+                            NewlineConfig::OnEnter { text, end, .. } => {
+                                edit_end = *end;
+                                // Like VS Code's `trimAutoWhitespace`, don't leave
+                                // whitespace-only lines behind.
+                                if selection_is_empty
+                                    && full_indent_len > 0
+                                    && start_point.column == full_indent_len
+                                {
+                                    start = buffer.point_to_offset(Point::new(start_point.row, 0));
+                                }
+                                (start, text.clone(), true)
                             }
                             NewlineConfig::UnindentCurrentLine { continuation } => {
                                 let row_start =
@@ -740,11 +763,22 @@ impl Editor {
                             }
                         };
 
-                        let anchor = buffer.anchor_after(end);
+                        let anchor = buffer.anchor_after(edit_end);
                         let new_selection = selection.map(|_| anchor);
+                        let cursor_columns_before_end = match &newline_config {
+                            NewlineConfig::OnEnter {
+                                cursor_columns_before_end,
+                                ..
+                            } => *cursor_columns_before_end,
+                            _ => 0,
+                        };
                         (
-                            ((edit_start..end, new_text), prevent_auto_indent),
-                            (newline_config.has_extra_line(), new_selection),
+                            ((edit_start..edit_end, new_text), prevent_auto_indent),
+                            (
+                                newline_config.has_extra_line(),
+                                cursor_columns_before_end,
+                                new_selection,
+                            ),
                         )
                     })
                     .unzip()
@@ -769,14 +803,17 @@ impl Editor {
             let buffer = this.buffer.read(cx).snapshot(cx);
             let new_selections = selection_info
                 .into_iter()
-                .map(|(extra_newline_inserted, new_selection)| {
-                    let mut cursor = new_selection.end.to_point(&buffer);
-                    if extra_newline_inserted {
-                        cursor.row -= 1;
-                        cursor.column = buffer.line_len(MultiBufferRow(cursor.row));
-                    }
-                    new_selection.map(|_| cursor)
-                })
+                .map(
+                    |(extra_newline_inserted, cursor_columns_before_end, new_selection)| {
+                        let mut cursor = new_selection.end.to_point(&buffer);
+                        if extra_newline_inserted {
+                            cursor.row -= 1;
+                            cursor.column = buffer.line_len(MultiBufferRow(cursor.row));
+                        }
+                        cursor.column = cursor.column.saturating_sub(cursor_columns_before_end);
+                        new_selection.map(|_| cursor)
+                    },
+                )
                 .collect();
 
             this.change_selections(Default::default(), window, cx, |s| s.select(new_selections));
@@ -2375,6 +2412,14 @@ enum NewlineConfig {
     ClearCurrentLine,
     /// Unindent the current line and add continuation
     UnindentCurrentLine { continuation: Arc<str> },
+    /// Replace the selection up to `end` with text computed from the language's
+    /// VS Code-style enter rules
+    OnEnter {
+        text: String,
+        end: MultiBufferOffset,
+        has_extra_line: bool,
+        cursor_columns_before_end: u32,
+    },
 }
 
 impl NewlineConfig {
@@ -2383,6 +2428,9 @@ impl NewlineConfig {
             self,
             Self::Newline {
                 extra_line_additional_indent: Some(_),
+                ..
+            } | Self::OnEnter {
+                has_extra_line: true,
                 ..
             }
         )
@@ -2651,6 +2699,30 @@ fn documentation_delimiter_for_newline(
     } else {
         None
     }
+}
+
+fn on_enter_for_newline(
+    range: Range<MultiBufferOffset>,
+    buffer: &MultiBufferSnapshot,
+    cx: &App,
+) -> Option<NewlineConfig> {
+    let (snapshot, buffer_start) = buffer.point_to_buffer_point(range.start.to_point(buffer))?;
+    let (end_snapshot, buffer_end) = buffer.point_to_buffer_point(range.end.to_point(buffer))?;
+    if snapshot.remote_id() != end_snapshot.remote_id() {
+        return None;
+    }
+    let settings = buffer.language_settings_at(range.start, cx);
+    let edit = snapshot.on_enter_edit(
+        buffer_start..buffer_end,
+        settings.tab_size,
+        settings.hard_tabs,
+    )?;
+    Some(NewlineConfig::OnEnter {
+        text: edit.text,
+        end: range.end + (edit.end.column - buffer_end.column) as usize,
+        has_extra_line: edit.has_extra_line,
+        cursor_columns_before_end: edit.cursor_columns_before_end,
+    })
 }
 
 /// The indentation a line inserted at `start_point` should start at, which is
