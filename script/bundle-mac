@@ -12,8 +12,8 @@ local_install=false
 can_code_sign=false
 
 # This must match the team in the provisioning profile.
-IDENTITY="Zed Industries, Inc."
-APPLE_NOTARIZATION_TEAM="MQ55VZLNZQ"
+IDENTITY="${MACOS_CODESIGN_IDENTITY:-Zed Industries, Inc.}"
+APPLE_NOTARIZATION_TEAM="${APPLE_NOTARIZATION_TEAM:-MQ55VZLNZQ}"
 
 # Function for displaying help info
 help_info() {
@@ -141,7 +141,16 @@ else
     echo "cargo::warning=Missing ${document_icon_source}; macOS document icons may not appear in Finder."
 fi
 
-if [[ -n "${MACOS_CERTIFICATE:-}" && -n "${MACOS_CERTIFICATE_PASSWORD:-}" && -n "${APPLE_NOTARIZATION_KEY:-}" && -n "${APPLE_NOTARIZATION_KEY_ID:-}" && -n "${APPLE_NOTARIZATION_ISSUER_ID:-}" ]]; then
+has_notarization_api_key=false
+if [[ -n "${APPLE_NOTARIZATION_KEY:-}" && -n "${APPLE_NOTARIZATION_KEY_ID:-}" && -n "${APPLE_NOTARIZATION_ISSUER_ID:-}" ]]; then
+    has_notarization_api_key=true
+fi
+has_notarization_apple_id=false
+if [[ -n "${APPLE_NOTARIZATION_APPLE_ID:-}" && -n "${APPLE_NOTARIZATION_PASSWORD:-}" ]]; then
+    has_notarization_apple_id=true
+fi
+
+if [[ -n "${MACOS_CERTIFICATE:-}" && -n "${MACOS_CERTIFICATE_PASSWORD:-}" ]] && [[ $has_notarization_api_key = true || $has_notarization_apple_id = true ]]; then
     can_code_sign=true
 
     echo "Setting up keychain for code signing..."
@@ -154,10 +163,14 @@ if [[ -n "${MACOS_CERTIFICATE:-}" && -n "${MACOS_CERTIFICATE_PASSWORD:-}" && -n 
     security import /tmp/zed-certificate.p12 -k zed.keychain -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
     rm /tmp/zed-certificate.p12
     security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_CERTIFICATE_PASSWORD" zed.keychain
+    # GitHub-hosted runners only search the login keychain, so codesign would not find the identity.
+    original_keychains=$(security list-keychains -d user | xargs)
+    security list-keychains -d user -s zed.keychain $original_keychains
 
     function cleanup() {
         echo "Cleaning up keychain"
         security default-keychain -s login.keychain
+        security list-keychains -d user -s $original_keychains
         security delete-keychain zed.keychain
     }
 
@@ -220,7 +233,10 @@ function sign_app_binaries() {
     download_git "${target_triple}" "${app_path}/Contents/MacOS/git"
 
     # Note: The app identifier for our development builds is the same as the app identifier for nightly.
-    cp crates/zed/contents/$channel/embedded.provisionprofile "${app_path}/Contents/"
+    # The profile belongs to Zed's team; an app signed by another team must not embed it.
+    if [[ -z "${MACOS_CODESIGN_IDENTITY:-}" ]]; then
+        cp crates/zed/contents/$channel/embedded.provisionprofile "${app_path}/Contents/"
+    fi
 
     if [[ $can_code_sign = true ]]; then
         echo "Code signing binaries"
@@ -230,7 +246,7 @@ function sign_app_binaries() {
         /usr/bin/codesign --deep --force --timestamp --options runtime --entitlements crates/zed/resources/zed.entitlements --sign "$IDENTITY" "${app_path}/Contents/MacOS/zed" -v
         /usr/bin/codesign --force --timestamp --options runtime --entitlements crates/zed/resources/zed.entitlements --sign "$IDENTITY" "${app_path}" -v
     else
-        echo "One or more of the following variables are missing: MACOS_CERTIFICATE, MACOS_CERTIFICATE_PASSWORD, APPLE_NOTARIZATION_KEY, APPLE_NOTARIZATION_KEY_ID, APPLE_NOTARIZATION_ISSUER_ID"
+        echo "One or more of the following variables are missing: MACOS_CERTIFICATE, MACOS_CERTIFICATE_PASSWORD, and either APPLE_NOTARIZATION_KEY, APPLE_NOTARIZATION_KEY_ID, APPLE_NOTARIZATION_ISSUER_ID or APPLE_NOTARIZATION_APPLE_ID, APPLE_NOTARIZATION_PASSWORD"
 
         echo "====== WARNING ======"
         echo "This bundle is being signed without all entitlements, some features (e.g. universal links) will not work"
@@ -295,9 +311,13 @@ function sign_app_binaries() {
         if [[ $can_code_sign = true ]]; then
             echo "Notarizing DMG with Apple"
             /usr/bin/codesign --deep --force --timestamp --options runtime --sign "$IDENTITY" "$(pwd)/${dmg_file_path}" -v
-            echo "$APPLE_NOTARIZATION_KEY" > "$notarization_key_file"
-            "${xcode_bin_dir_path}/notarytool" submit --wait --key "$notarization_key_file" --key-id "$APPLE_NOTARIZATION_KEY_ID" --issuer "$APPLE_NOTARIZATION_ISSUER_ID" "${dmg_file_path}"
-            rm "$notarization_key_file"
+            if [[ $has_notarization_api_key = true ]]; then
+                echo "$APPLE_NOTARIZATION_KEY" > "$notarization_key_file"
+                "${xcode_bin_dir_path}/notarytool" submit --wait --key "$notarization_key_file" --key-id "$APPLE_NOTARIZATION_KEY_ID" --issuer "$APPLE_NOTARIZATION_ISSUER_ID" "${dmg_file_path}"
+                rm "$notarization_key_file"
+            else
+                "${xcode_bin_dir_path}/notarytool" submit --wait --apple-id "$APPLE_NOTARIZATION_APPLE_ID" --password "$APPLE_NOTARIZATION_PASSWORD" --team-id "$APPLE_NOTARIZATION_TEAM" "${dmg_file_path}"
+            fi
             "${xcode_bin_dir_path}/stapler" staple "${dmg_file_path}"
         fi
 

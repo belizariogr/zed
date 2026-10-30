@@ -1,0 +1,216 @@
+# Builds this fork for macOS (signed and notarized DMG) and Linux (archive
+# installed with script/install-linux-release), then publishes a GitHub release.
+name: Fork release
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a GitHub release with the builds
+        type: boolean
+        default: true
+  push:
+    tags:
+    - fork-v*
+permissions:
+  contents: read
+concurrency:
+  group: fork-release-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: '1'
+  # Stable builds would otherwise replace this fork with the official Zed release.
+  ZED_UPDATE_EXPLANATION: Install new versions from https://github.com/belizariogr/zed/releases
+jobs:
+  bundle_mac:
+    if: github.repository == 'belizariogr/zed'
+    name: macOS (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arch: aarch64
+          target: aarch64-apple-darwin
+        - arch: x86_64
+          target: x86_64-apple-darwin
+    runs-on: macos-26
+    timeout-minutes: 360
+    env:
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_P12_BASE64 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_P12_PASSWORD }}
+      MACOS_CODESIGN_IDENTITY: 'Developer ID Application: Belizario Goncalves Ribeiro Filho (3Z7C3Q7NMT)'
+      APPLE_NOTARIZATION_TEAM: 3Z7C3Q7NMT
+      APPLE_NOTARIZATION_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+      APPLE_NOTARIZATION_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+    steps:
+    - name: Require signing secrets
+      run: |
+        missing=()
+        for name in MACOS_CERTIFICATE MACOS_CERTIFICATE_PASSWORD APPLE_NOTARIZATION_APPLE_ID APPLE_NOTARIZATION_PASSWORD; do
+          if [[ -z "${!name}" ]]; then
+            missing+=("$name")
+          fi
+        done
+        if ((${#missing[@]} > 0)); then
+          echo "::error::Missing secrets for ${missing[*]} (MACOS_P12_BASE64, MACOS_P12_PASSWORD, MACOS_NOTARY_APPLE_ID, MACOS_NOTARY_PASSWORD)."
+          exit 1
+        fi
+    - name: Checkout
+      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+    - name: Use the stable release channel
+      run: echo stable > crates/zed/RELEASE_CHANNEL
+    # script/bundle-mac installs dmg-license with npm.
+    - name: Setup Node
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+      with:
+        node-version: '24'
+        package-manager-cache: false
+    # Since Xcode 26 the Metal compiler, needed by gpui_apple, is a separate download.
+    - name: Install Metal toolchain
+      run: |
+        if ! xcrun -sdk macosx metal --version >/dev/null 2>&1; then
+          xcodebuild -downloadComponent MetalToolchain
+        fi
+    - name: Print macOS toolchain
+      run: |
+        sw_vers
+        xcodebuild -version
+        xcrun --sdk macosx --show-sdk-version
+        df -h .
+    # On GitHub-hosted macOS runners stapler loses its CloudKit connection
+    # over IPv6 (stapler exit code 68), as seen in the bgdesk release workflow.
+    - name: Prefer IPv4 for stapler
+      run: |
+        networksetup -listallnetworkservices | tail -n +2 | while IFS= read -r service; do
+          case "$service" in
+            "" | \**) continue ;;
+          esac
+          sudo networksetup -setv6off "$service" || true
+        done
+    - name: Bundle
+      run: ./script/bundle-mac ${{ matrix.target }}
+    - name: Verify signature and notarization
+      run: |
+        dmg="target/${{ matrix.target }}/release/Zed-${{ matrix.arch }}.dmg"
+        codesign --verify --strict --verbose=2 "$dmg"
+        xcrun stapler validate "$dmg"
+        spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
+        app="target/${{ matrix.target }}/release/dmg/Zed.app"
+        codesign --verify --deep --strict --verbose=2 \
+          -R '=anchor apple generic and certificate leaf[subject.OU] = "3Z7C3Q7NMT" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists' \
+          "$app"
+    - name: Upload DMG
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: Zed-${{ matrix.arch }}.dmg
+        path: target/${{ matrix.target }}/release/Zed-${{ matrix.arch }}.dmg
+        if-no-files-found: error
+
+  bundle_linux:
+    if: github.repository == 'belizariogr/zed'
+    name: Linux (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arch: x86_64
+          os: ubuntu-22.04
+        - arch: aarch64
+          os: ubuntu-22.04-arm
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 360
+    env:
+      CC: clang-18
+      CXX: clang++-18
+      LLD: /usr/bin/ld.lld-18
+    steps:
+    - name: Free disk space
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+        df -h /
+    - name: Checkout
+      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+    - name: Use the stable release channel
+      run: echo stable > crates/zed/RELEASE_CHANNEL
+    # Ubuntu 22.04's clang 14 cannot build webrtc-sys; upstream also builds with clang 18.
+    - name: Install clang 18
+      run: |
+        curl -fsSL https://apt.llvm.org/llvm.sh -o "$RUNNER_TEMP/llvm.sh"
+        sudo bash "$RUNNER_TEMP/llvm.sh" 18
+    - name: Install build dependencies
+      run: ./script/linux
+    - name: Download WASI SDK
+      run: ./script/download-wasi-sdk
+    - name: Bundle
+      run: ./script/bundle-linux --skip-sentry
+    - name: Package for script/install-linux-release
+      run: |
+        version="$(script/get-crate-version zed)"
+        stage="$RUNNER_TEMP/stage"
+        mkdir -p "$stage" dist
+        tar -xzf "target/release/zed-linux-${{ matrix.arch }}.tar.gz" -C "$stage"
+        gunzip --stdout "target/zed-remote-server-linux-${{ matrix.arch }}.gz" >"$stage/zed.app/remote-server"
+        chmod 755 "$stage/zed.app/remote-server"
+        # Matches AppVersion::load(): the build id and commit come from GITHUB_RUN_NUMBER and HEAD.
+        echo "${version}+stable.${GITHUB_RUN_NUMBER}.$(git rev-parse HEAD)" >"$stage/zed.app/remote-server-version"
+        tar -czf "dist/zed-linux-${{ matrix.arch }}.tar.gz" -C "$stage" zed.app
+        echo "$version" >dist/version
+    - name: Upload archive
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: zed-linux-${{ matrix.arch }}.tar.gz
+        path: dist/zed-linux-${{ matrix.arch }}.tar.gz
+        if-no-files-found: error
+    - name: Upload version
+      if: matrix.arch == 'x86_64'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: version
+        path: dist/version
+        if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'push' || inputs.publish
+    needs:
+    - bundle_mac
+    - bundle_linux
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - name: Checkout
+      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+    - name: Download builds
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        path: artifacts
+        merge-multiple: true
+    - name: Create release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        version="$(cat artifacts/version)"
+        if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+          tag="$GITHUB_REF_NAME"
+        else
+          tag="fork-v${version}-${GITHUB_RUN_NUMBER}"
+        fi
+        cp script/install-linux-release artifacts/install-zed-linux.sh
+        cat >"$RUNNER_TEMP/notes.md" <<EOF
+        Zed ${version} (fork build ${GITHUB_RUN_NUMBER}, ${GITHUB_SHA})
+
+        - macOS: open \`Zed-aarch64.dmg\` (Apple Silicon) or \`Zed-x86_64.dmg\` (Intel) and drag Zed to Applications.
+        - Linux: \`curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/install-zed-linux.sh | ZED_RELEASE_TAG=${tag} bash\`
+        EOF
+        gh release create "$tag" \
+          --repo "$GITHUB_REPOSITORY" \
+          --target "$GITHUB_SHA" \
+          --title "Zed ${version} (fork ${GITHUB_RUN_NUMBER})" \
+          --notes-file "$RUNNER_TEMP/notes.md" \
+          --latest \
+          artifacts/Zed-aarch64.dmg \
+          artifacts/Zed-x86_64.dmg \
+          artifacts/zed-linux-x86_64.tar.gz \
+          artifacts/zed-linux-aarch64.tar.gz \
+          artifacts/install-zed-linux.sh
