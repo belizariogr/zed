@@ -9,7 +9,7 @@ Semantic tokens provide richer syntax highlighting by using information from lan
 
 ## Enabling Semantic Tokens
 
-Semantic tokens are controlled by the `semantic_tokens` setting. By default, semantic tokens are disabled.
+Semantic tokens are controlled by the `semantic_tokens` setting. By default, semantic tokens are disabled, except for JavaScript, TypeScript, and TSX, which use `"combined"` so that the language server decides whether an identifier is a class, type, or constant.
 
 ```json [settings]
 {

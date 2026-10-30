@@ -1,0 +1,19 @@
+// Shared by JavaScript, TypeScript, and TSX. tsserver reports `const` bindings,
+// readonly properties, and enum members with the `readonly` modifier, which VS
+// Code styles as constants.
+[
+  {
+    "token_type": "variable",
+    "token_modifiers": ["readonly"],
+    "style": ["constant"]
+  },
+  {
+    "token_type": "property",
+    "token_modifiers": ["readonly"],
+    "style": ["constant"]
+  },
+  {
+    "token_type": "enumMember",
+    "style": ["type.enum.member", "type.enum", "variant", "constant"]
+  }
+]

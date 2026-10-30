@@ -14,6 +14,7 @@ use node_runtime::{NodeRuntime, VersionStrategy};
 use project::{Fs, lsp_store::language_server_settings};
 use semver::{Version, VersionReq};
 use serde_json::{Value, json};
+use settings::SemanticTokenRules;
 use smol::lock::RwLock;
 use std::{
     borrow::Cow,
@@ -27,6 +28,14 @@ use util::rel_path::RelPath;
 use util::{ResultExt, maybe};
 
 use crate::{PackageJson, PackageJsonData};
+
+pub(crate) fn semantic_token_rules() -> SemanticTokenRules {
+    let content = grammars::get_file("typescript/semantic_token_rules.json")
+        .expect("missing typescript/semantic_token_rules.json");
+    let json = std::str::from_utf8(&content.data).expect("invalid utf-8 in semantic_token_rules");
+    settings::parse_json_with_comments::<SemanticTokenRules>(json)
+        .expect("failed to parse typescript semantic_token_rules.json")
+}
 
 pub(crate) struct TypeScriptContextProvider {
     fs: Arc<dyn Fs>,
@@ -917,10 +926,15 @@ async fn get_cached_ts_server_binary(
 mod tests {
     use std::path::Path;
 
-    use gpui::{AppContext as _, BackgroundExecutor, Hsla, TestAppContext};
-    use project::FakeFs;
+    use gpui::{App, AppContext as _, BackgroundExecutor, Hsla, TestAppContext};
+    use lsp::LanguageServerId;
+    use project::{
+        FakeFs,
+        lsp_store::{SemanticTokenStylizer, TokenType},
+    };
     use rope::Rope;
     use serde_json::json;
+    use settings::SettingsStore;
     use task::TaskTemplates;
     use theme::SyntaxTheme;
     use unindent::Unindent;
@@ -928,7 +942,7 @@ mod tests {
 
     use crate::typescript::{
         PackageJsonData, TypeScriptContextProvider, detect_package_manager,
-        replace_test_name_parameters,
+        replace_test_name_parameters, semantic_token_rules,
     };
 
     #[gpui::test]
@@ -987,11 +1001,13 @@ mod tests {
     }
 
     #[test]
-    fn test_imported_class_highlighting() {
-        let source = Rope::from(
-            r#"import { Dog } from "./dog";
-Dog.bark();"#,
-        );
+    fn test_pascal_case_identifiers_are_not_assumed_to_be_classes() {
+        let source = r#"import { Dog } from "./dog";
+const Config = { retries: 3 };
+Config.retries;
+new Dog();
+class Cat extends Dog {}"#;
+        let rope = Rope::from(source);
         let theme = SyntaxTheme::new_test([("type", Hsla::blue()), ("type.class", Hsla::green())]);
 
         for language in [
@@ -1008,20 +1024,122 @@ Dog.bark();"#,
                 .and_then(|grammar| grammar.highlight_id_for_name("type.class"))
                 .expect("type.class highlight should be defined");
 
-            let highlights = language.highlight_text(&source, 0..source.len());
-            let class_ranges: Vec<_> = highlights
-                .into_iter()
+            let class_names: Vec<_> = language
+                .highlight_text(&rope, 0..rope.len())
                 .filter(|(_, highlight)| *highlight == class_highlight)
-                .map(|(range, _)| range)
+                .map(|(range, _)| &source[range])
                 .collect();
 
             assert_eq!(
-                class_ranges,
-                vec![9..12, 29..32],
-                "{} imported class references should use the type.class highlight",
+                class_names,
+                vec!["Dog", "Cat", "Dog"],
+                "{} should only assume classes from `new`, `class`, and `extends`; \
+                the language server classifies the remaining identifiers",
                 language.name()
             );
         }
+    }
+
+    #[gpui::test]
+    fn test_semantic_token_rules_style_readonly_bindings_as_constants(cx: &mut App) {
+        let settings_store = SettingsStore::test(cx);
+        cx.set_global(settings_store);
+
+        // The legend vtsls advertises, matching VS Code's TypeScript extension.
+        let legend = lsp::SemanticTokensLegend {
+            token_types: [
+                "class",
+                "enum",
+                "interface",
+                "namespace",
+                "typeParameter",
+                "type",
+                "parameter",
+                "variable",
+                "enumMember",
+                "property",
+                "function",
+                "method",
+            ]
+            .map(lsp::SemanticTokenType::new)
+            .to_vec(),
+            token_modifiers: [
+                "declaration",
+                "static",
+                "async",
+                "readonly",
+                "defaultLibrary",
+                "local",
+            ]
+            .map(lsp::SemanticTokenModifier::new)
+            .to_vec(),
+        };
+        let rules = semantic_token_rules();
+        let stylizer = SemanticTokenStylizer::new(LanguageServerId(0), &legend, Some(&rules), cx);
+
+        let highest_precedence_style = |token_type: &str, modifiers: &[&str]| -> Vec<String> {
+            let token_type = legend
+                .token_types
+                .iter()
+                .position(|candidate| candidate.as_str() == token_type)
+                .expect("token type should be in the legend");
+            let modifier_bits = modifiers
+                .iter()
+                .map(|modifier| {
+                    let index = legend
+                        .token_modifiers
+                        .iter()
+                        .position(|candidate| candidate.as_str() == *modifier)
+                        .expect("token modifier should be in the legend");
+                    1 << index
+                })
+                .fold(0, |bits, bit| bits | bit);
+            stylizer
+                .rules_for_token(TokenType(token_type as u32))
+                .expect("token type should have rules")
+                .iter()
+                .rev()
+                .find(|rule| {
+                    rule.token_modifiers
+                        .iter()
+                        .all(|modifier| stylizer.has_modifier(modifier_bits, modifier))
+                })
+                .map(|rule| rule.style.clone())
+                .unwrap_or_default()
+        };
+
+        // `const Config = { ... }` is a PascalCase object, not a class.
+        assert_eq!(
+            highest_precedence_style("variable", &["declaration", "readonly"]),
+            vec!["constant"]
+        );
+        assert_eq!(
+            highest_precedence_style("variable", &["readonly", "local"]),
+            vec!["constant"]
+        );
+        assert_eq!(highest_precedence_style("variable", &[]), vec!["variable"]);
+        assert_eq!(
+            highest_precedence_style("property", &["readonly"]),
+            vec!["constant"]
+        );
+        assert_eq!(highest_precedence_style("property", &[]), vec!["property"]);
+        assert_eq!(
+            highest_precedence_style("enumMember", &["readonly"]),
+            vec!["type.enum.member", "type.enum", "variant", "constant"]
+        );
+        assert_eq!(
+            highest_precedence_style("class", &[]),
+            vec!["type.class", "class", "type"]
+        );
+        assert_eq!(
+            highest_precedence_style("interface", &[]),
+            vec!["type.interface", "interface", "type"]
+        );
+        assert_eq!(highest_precedence_style("type", &[]), vec!["type"]);
+        assert_eq!(
+            highest_precedence_style("namespace", &[]),
+            vec!["namespace", "module", "type"]
+        );
     }
 
     #[gpui::test]

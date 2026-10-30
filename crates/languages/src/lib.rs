@@ -189,18 +189,21 @@ pub fn init(languages: Arc<LanguageRegistry>, fs: Arc<dyn Fs>, node: NodeRuntime
             name: "tsx",
             adapters: vec![typescript_lsp_adapter.clone(), vtsls_adapter.clone()],
             context: Some(typescript_context.clone()),
+            semantic_token_rules: Some(typescript::semantic_token_rules()),
             ..Default::default()
         },
         LanguageInfo {
             name: "typescript",
             adapters: vec![typescript_lsp_adapter.clone(), vtsls_adapter.clone()],
             context: Some(typescript_context.clone()),
+            semantic_token_rules: Some(typescript::semantic_token_rules()),
             ..Default::default()
         },
         LanguageInfo {
             name: "javascript",
             adapters: vec![typescript_lsp_adapter.clone(), vtsls_adapter.clone()],
             context: Some(typescript_context),
+            semantic_token_rules: Some(typescript::semantic_token_rules()),
             ..Default::default()
         },
         LanguageInfo {
