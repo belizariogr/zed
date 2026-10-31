@@ -229,6 +229,54 @@ restart_remote_servers() {
   done
 }
 
+system_library_path() {
+  local soname="$1" abi
+  case "$(uname -m)" in
+    x86_64) abi="x86-64" ;;
+    aarch64 | arm64) abi="AArch64" ;;
+    *) return 1 ;;
+  esac
+  ldconfig -p 2>/dev/null |
+    awk -v soname="$soname" -v abi="$abi" '$1 == soname && index($0, abi) { print $NF; exit }'
+}
+
+highest_glibcxx() {
+  grep -aoE 'GLIBCXX_3\.4\.[0-9]+' "$1" | sort -uV | tail -n1
+}
+
+# The bundled libraries come from the older distribution the release is built
+# on. Once loaded through the rpath they also satisfy the system graphics
+# drivers the editor dlopens, so a bundled libstdc++ older than the system's
+# makes Mesa's Vulkan driver fail to load ("No GPU adapters found"). Only keep
+# the libraries this system lacks, or whose system libstdc++ is older.
+prune_bundled_libraries() {
+  local library soname system_library
+  shopt -s nullglob
+  for library in "${bundle}/lib"/*; do
+    soname="$(basename "$library")"
+    system_library="$(system_library_path "$soname" || true)"
+    if [[ -z "$system_library" || ! -e "$system_library" ]]; then
+      echo "==> Keeping bundled ${soname} (not found on this system)"
+      continue
+    fi
+    if [[ "$soname" == libstdc++.so.* ]]; then
+      local bundled_version system_version
+      bundled_version="$(highest_glibcxx "$library")"
+      system_version="$(highest_glibcxx "$system_library")"
+      if [[ "$(printf '%s\n%s\n' "$bundled_version" "$system_version" | sort -V | tail -n1)" != "$system_version" ]]; then
+        echo "==> Keeping bundled ${soname} (${bundled_version} is newer than the system's ${system_version})"
+        continue
+      fi
+    fi
+    rm -f "$library"
+  done
+  shopt -u nullglob
+}
+
+if [[ -d "${bundle}/lib" ]]; then
+  prune_bundled_libraries
+fi
+
 desktop_file="${temp_dir}/${app_id}.desktop"
 # Absolute path so the launcher shows the icon even before icon caches refresh.
 sed "s|^Icon=.*|Icon=${icon_dst_512}|" "$desktop_source" >"$desktop_file"

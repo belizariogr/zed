@@ -1542,6 +1542,8 @@ fn open_about_window(cx: &mut App) {
         Arc::new(Image::from_bytes(ImageFormat::Png, bytes.to_vec()))
     }
 
+    const REPACK_NOTICE: &str = "Repack of Zed by Belizário Ribeiro";
+
     struct AboutWindow {
         focus_handle: FocusHandle,
         ok_entry: NavigableEntry,
@@ -1585,11 +1587,14 @@ fn open_about_window(cx: &mut App) {
             let content = match self.commit.as_ref() {
                 Some(commit) => {
                     format!(
-                        "{}\nCommit: {}\nVersion: {}",
+                        "{}\n{REPACK_NOTICE}\nCommit: {}\nVersion: {}",
                         self.message, commit, self.full_version
                     )
                 }
-                None => format!("{}\nVersion: {}", self.message, self.full_version),
+                None => format!(
+                    "{}\n{REPACK_NOTICE}\nVersion: {}",
+                    self.message, self.full_version
+                ),
             };
             cx.write_to_clipboard(ClipboardItem::new_string(content));
             window.remove_window();
@@ -1624,6 +1629,11 @@ fn open_about_window(cx: &mut App) {
                             .items_center()
                             .child(img(self.app_icon.clone()).size_16().flex_none())
                             .child(Headline::new(self.message.clone()))
+                            .child(
+                                Label::new(REPACK_NOTICE)
+                                    .color(Color::Muted)
+                                    .size(LabelSize::Small),
+                            )
                             .when_some(self.commit.clone(), |this, commit| {
                                 this.child(
                                     Label::new("Commit")
@@ -1712,7 +1722,7 @@ fn open_about_window(cx: &mut App) {
 
     let window_size = Size {
         width: px(440.),
-        height: px(300.),
+        height: px(324.),
     };
 
     cx.open_window(
