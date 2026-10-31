@@ -23,7 +23,8 @@ binary is installed and started again afterward.
 
 Environment:
   PREFIX            Install prefix (default: /usr)
-  SUDO              Privilege helper (default: sudo)
+  SUDO              Privilege helper (default: sudo; unused as root)
+  SUDO_ASKPASS      Password helper; when set, sudo runs with -A
   ZED_RELEASE_REPO  GitHub repository to download from (default: belizariogr/zed)
   ZED_RELEASE_TAG   Release tag to download (default: latest release)
 EOF
@@ -56,12 +57,17 @@ repository="${ZED_RELEASE_REPO:-belizariogr/zed}"
 tag="${ZED_RELEASE_TAG:-}"
 
 privileged=()
-if [[ -n "$SUDO" ]]; then
+if [[ -n "$SUDO" && "$(id -u)" != 0 ]]; then
   if ! command -v "$SUDO" >/dev/null 2>&1; then
     echo "error: '${SUDO}' not found. Install as root or set SUDO=." >&2
     exit 1
   fi
   privileged=("$SUDO")
+  # The editor's auto-updater asks for the password itself and passes it to
+  # sudo through SUDO_ASKPASS.
+  if [[ -n "${SUDO_ASKPASS:-}" && "$(basename "$SUDO")" == sudo ]]; then
+    privileged+=(-A)
+  fi
 fi
 
 dependencies=(tar)
@@ -293,45 +299,66 @@ if ((${#restart_identifiers[@]} > 0)) || [[ -n "$(collect_remote_server_pids)" ]
   stop_remote_servers
 fi
 
-echo "==> Installing into ${PREFIX} (requires privileges)"
+# All privileged steps run in one invocation, so the password is asked for
+# only once, even by helpers that do not cache credentials.
+system_install_script="${temp_dir}/install-system-files.sh"
+cat >"$system_install_script" <<'SYSTEM_INSTALL'
+set -euo pipefail
+bundle="$1"
+PREFIX="$2"
+install_dir="$3"
+desktop_file="$4"
+app_id="$5"
+icon_source="$6"
+icon_source_2x="$7"
+icon_dst_512="$8"
+icon_dst_512_app_id="$9"
+icon_dst_1024="${10}"
+
 # The editor finds its bundled libraries through the $ORIGIN/../lib rpath, so
 # the bundle layout is kept intact. Replacing the whole directory also removes
 # the zed-editor left there by script/install-linux-system.
 staged_dir="${install_dir}.new"
-${privileged[@]+"${privileged[@]}"} rm -rf "$staged_dir"
-${privileged[@]+"${privileged[@]}"} mkdir -p "$staged_dir"
-${privileged[@]+"${privileged[@]}"} cp -a --no-preserve=ownership "${bundle}/bin" "${bundle}/libexec" "$staged_dir/"
+rm -rf "$staged_dir"
+mkdir -p "$staged_dir"
+cp -a --no-preserve=ownership "${bundle}/bin" "${bundle}/libexec" "$staged_dir/"
 if [[ -d "${bundle}/lib" ]]; then
-  ${privileged[@]+"${privileged[@]}"} cp -a --no-preserve=ownership "${bundle}/lib" "$staged_dir/"
+  cp -a --no-preserve=ownership "${bundle}/lib" "$staged_dir/"
 fi
 if [[ -f "${bundle}/licenses.md" ]]; then
-  ${privileged[@]+"${privileged[@]}"} install -m644 "${bundle}/licenses.md" "$staged_dir/licenses.md"
+  install -m644 "${bundle}/licenses.md" "$staged_dir/licenses.md"
 fi
-${privileged[@]+"${privileged[@]}"} rm -rf "$install_dir"
-${privileged[@]+"${privileged[@]}"} mv "$staged_dir" "$install_dir"
+rm -rf "$install_dir"
+mv "$staged_dir" "$install_dir"
 # The CLI resolves its own symlink and looks for ../libexec/zed-editor.
-${privileged[@]+"${privileged[@]}"} mkdir -p "${PREFIX}/bin"
-${privileged[@]+"${privileged[@]}"} ln -sfn "${install_dir}/bin/zed" "${PREFIX}/bin/zed"
-${privileged[@]+"${privileged[@]}"} install -Dm755 "$desktop_file" "${PREFIX}/share/applications/${app_id}.desktop"
-${privileged[@]+"${privileged[@]}"} install -Dm644 "$icon_source" "$icon_dst_512"
-${privileged[@]+"${privileged[@]}"} install -Dm644 "$icon_source" "$icon_dst_512_app_id"
-${privileged[@]+"${privileged[@]}"} install -Dm644 "$icon_source_2x" "$icon_dst_1024"
+mkdir -p "${PREFIX}/bin"
+ln -sfn "${install_dir}/bin/zed" "${PREFIX}/bin/zed"
+install -Dm755 "$desktop_file" "${PREFIX}/share/applications/${app_id}.desktop"
+install -Dm644 "$icon_source" "$icon_dst_512"
+install -Dm644 "$icon_source" "$icon_dst_512_app_id"
+install -Dm644 "$icon_source_2x" "$icon_dst_1024"
+
+# Remove desktop entries left over from other channels so only one shortcut remains.
+for stale_id in dev.zed.Zed-Dev dev.zed.Zed-Preview dev.zed.Zed-Nightly; do
+  rm -f "${PREFIX}/share/applications/${stale_id}.desktop"
+done
+
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -f "${PREFIX}/share/icons/hicolor" >/dev/null 2>&1 || true
+fi
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database "${PREFIX}/share/applications" >/dev/null 2>&1 || true
+fi
+SYSTEM_INSTALL
+
+echo "==> Installing into ${PREFIX} (requires privileges)"
+${privileged[@]+"${privileged[@]}"} "$(command -v bash)" "$system_install_script" \
+  "$bundle" "$PREFIX" "$install_dir" "$desktop_file" "$app_id" \
+  "$icon_source" "$icon_source_2x" "$icon_dst_512" "$icon_dst_512_app_id" "$icon_dst_1024"
 
 echo "==> Installing remote server to ${server_dest}"
 install -Dm755 "${bundle}/remote-server" "$server_dest"
 "$server_dest" version >/dev/null
-
-# Remove desktop entries left over from other channels so only one shortcut remains.
-for stale_id in dev.zed.Zed-Dev dev.zed.Zed-Preview dev.zed.Zed-Nightly; do
-  ${privileged[@]+"${privileged[@]}"} rm -f "${PREFIX}/share/applications/${stale_id}.desktop"
-done
-
-if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-  ${privileged[@]+"${privileged[@]}"} gtk-update-icon-cache -f "${PREFIX}/share/icons/hicolor" >/dev/null 2>&1 || true
-fi
-if command -v update-desktop-database >/dev/null 2>&1; then
-  ${privileged[@]+"${privileged[@]}"} update-desktop-database "${PREFIX}/share/applications" >/dev/null 2>&1 || true
-fi
 
 if [[ "$remote_server_was_running" == true ]]; then
   restart_remote_servers

@@ -1,6 +1,8 @@
 use anyhow::{Context as _, Result};
+use askpass::{AskPassDelegate, AskPassSession, EncryptedPassword};
 use client::Client;
 use db::kvp::KeyValueStore;
+use futures::channel::oneshot;
 use futures_lite::StreamExt;
 use gpui::{
     App, AppContext as _, AsyncApp, BackgroundExecutor, Context, Entity, EventEmitter, Global,
@@ -47,6 +49,13 @@ impl std::error::Error for MissingDependencyError {}
 const POLL_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const NIGHTLY_POLL_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const REMOTE_SERVER_CACHE_LIMIT: usize = 5;
+
+/// GitHub repository whose releases this fork updates from. Its stable builds
+/// must not be replaced by the official zed.dev releases.
+const FORK_RELEASE_REPOSITORY: &str = match option_env!("ZED_FORK_RELEASE_REPOSITORY") {
+    Some(repository) => repository,
+    None => "belizariogr/zed",
+};
 
 #[cfg(target_os = "linux")]
 fn linux_rsync_install_hint() -> &'static str {
@@ -195,6 +204,30 @@ pub struct ReleaseAsset {
     pub url: String,
 }
 
+/// `release.json`, published with every release by `.github/workflows/fork_release.yml`.
+#[derive(Deserialize, Debug)]
+struct ForkReleaseManifest {
+    version: String,
+    tag: String,
+    assets: Vec<String>,
+}
+
+fn fork_release_asset_name(os: &str, arch: &str) -> Result<String> {
+    match os {
+        "macos" => Ok(format!("Zed-{arch}.dmg")),
+        "linux" => Ok(format!("zed-linux-{arch}.tar.gz")),
+        "windows" => Ok(format!("Zed-{arch}.exe")),
+        unsupported_os => anyhow::bail!("not supported: {unsupported_os}"),
+    }
+}
+
+/// The run number the release workflow builds with, from build metadata such
+/// as `stable.7.<sha>`. Builds without one (local builds) only update to a
+/// higher version.
+fn fork_build_number(version: &Version) -> Option<u64> {
+    version.build.as_str().split('.').nth(1)?.parse().ok()
+}
+
 struct MacOsUnmounter<'a> {
     mount_path: PathBuf,
     background_executor: &'a BackgroundExecutor,
@@ -263,6 +296,26 @@ impl Settings for AutoUpdateSetting {
 struct GlobalAutoUpdate(Option<Entity<AutoUpdater>>);
 
 impl Global for GlobalAutoUpdate {}
+
+type PasswordPrompt = dyn Fn(String, oneshot::Sender<EncryptedPassword>, oneshot::Receiver<()>, &mut AsyncApp)
+    + Send
+    + Sync;
+
+/// Asks for the password `sudo` needs to install an update into a Linux
+/// system prefix. Registered by the UI, which owns the password modal.
+struct GlobalInstallPasswordPrompt(Arc<PasswordPrompt>);
+
+impl Global for GlobalInstallPasswordPrompt {}
+
+pub fn set_install_password_prompt(
+    cx: &mut App,
+    prompt: impl Fn(String, oneshot::Sender<EncryptedPassword>, oneshot::Receiver<()>, &mut AsyncApp)
+    + Send
+    + Sync
+    + 'static,
+) {
+    cx.set_global(GlobalInstallPasswordPrompt(Arc::new(prompt)));
+}
 
 pub fn init(client: Arc<Client>, cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
@@ -737,6 +790,49 @@ impl AutoUpdater {
         })
     }
 
+    async fn get_fork_release(
+        this: &Entity<Self>,
+        os: &str,
+        arch: &str,
+        cx: &mut AsyncApp,
+    ) -> Result<ReleaseAsset> {
+        let http_client = this.read_with(cx, |this, _| this.client.http_client());
+        let manifest_url = format!(
+            "https://github.com/{FORK_RELEASE_REPOSITORY}/releases/latest/download/release.json"
+        );
+        let mut response = http_client
+            .get(&manifest_url, Default::default(), true)
+            .await?;
+        let mut body = Vec::new();
+        response.body_mut().read_to_end(&mut body).await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "failed to fetch {manifest_url}: {}",
+            response.status(),
+        );
+        let manifest: ForkReleaseManifest =
+            serde_json::from_slice(body.as_slice()).with_context(|| {
+                format!(
+                    "error deserializing release manifest {:?}",
+                    String::from_utf8_lossy(&body),
+                )
+            })?;
+
+        let asset = fork_release_asset_name(os, arch)?;
+        anyhow::ensure!(
+            manifest.assets.contains(&asset),
+            "the latest release ({}) has no build for {os} {arch}",
+            manifest.tag,
+        );
+        Ok(ReleaseAsset {
+            version: manifest.version,
+            url: format!(
+                "https://github.com/{FORK_RELEASE_REPOSITORY}/releases/download/{}/{asset}",
+                manifest.tag
+            ),
+        })
+    }
+
     async fn update(this: Entity<Self>, cx: &mut AsyncApp) -> Result<()> {
         let (client, installed_version, previous_status, release_channel) =
             this.read_with(cx, |this, cx| {
@@ -756,8 +852,7 @@ impl AutoUpdater {
             cx.notify();
         });
 
-        let fetched_release_data =
-            Self::get_release_asset(&this, release_channel, None, "zed", OS, ARCH, cx).await?;
+        let fetched_release_data = Self::get_fork_release(&this, OS, ARCH, cx).await?;
         let fetched_version = fetched_release_data.clone().version;
         let app_commit_sha = Ok(cx.update(|cx| AppCommitSha::try_global(cx).map(|sha| sha.full())));
         let newer_version = Self::check_if_fetched_version_is_newer(
@@ -837,16 +932,24 @@ impl AutoUpdater {
         #[cfg(not(test))]
         let install_result = {
             let running_app_path = cx.update(|cx| cx.app_path())?;
+            let askpass = Self::install_askpass_session(&running_app_path, cx).await?;
+            let askpass_script = askpass
+                .as_ref()
+                .map(|askpass| PathBuf::from(askpass.script_path().as_ref()));
             let background_executor = cx.background_executor().clone();
             let channel = cx.update(|cx| ReleaseChannel::global(cx).dev_name());
-            cx.background_spawn(Self::install_release(
-                installer_dir,
-                target_path.clone(),
-                running_app_path,
-                channel,
-                background_executor,
-            ))
-            .await
+            let install_result = cx
+                .background_spawn(Self::install_release(
+                    installer_dir,
+                    target_path.clone(),
+                    running_app_path,
+                    channel,
+                    askpass_script,
+                    background_executor,
+                ))
+                .await;
+            drop(askpass);
+            install_result
         };
         let new_binary_path = install_result
             .with_context(|| format!("Failed to install update at: {}", target_path.display()))?;
@@ -903,7 +1006,18 @@ impl AutoUpdater {
 
     fn check_dependencies() -> Result<()> {
         #[cfg(target_os = "linux")]
-        if which::which("rsync").is_err() {
+        if let Some(prefix) = env::current_exe()
+            .ok()
+            .and_then(|running_app_path| linux_system_install_prefix(&running_app_path))
+        {
+            if which::which("sudo").is_err() && !is_root() {
+                return Err(MissingDependencyError(format!(
+                    "sudo is required to install updates into {}. Install sudo, or update by running install-zed-linux.sh from https://github.com/{FORK_RELEASE_REPOSITORY}/releases/latest as root",
+                    prefix.display()
+                ))
+                .into());
+            }
+        } else if which::which("rsync").is_err() {
             let install_hint = linux_rsync_install_hint();
             return Err(MissingDependencyError(format!(
                 "rsync is required for auto-updates but is not installed. {install_hint}"
@@ -931,12 +1045,39 @@ impl AutoUpdater {
         Ok(installer_dir.path().join(filename))
     }
 
+    /// Linux system installs need root, which `sudo` gets from Zed's own
+    /// password prompt through askpass, so no polkit agent is needed.
+    #[cfg_attr(test, allow(dead_code))]
+    async fn install_askpass_session(
+        running_app_path: &Path,
+        cx: &mut AsyncApp,
+    ) -> Result<Option<AskPassSession>> {
+        if OS != "linux" || is_root() || linux_system_install_prefix(running_app_path).is_none() {
+            return Ok(None);
+        }
+        let prompt = cx
+            .update(|cx| {
+                cx.try_global::<GlobalInstallPasswordPrompt>()
+                    .map(|prompt| prompt.0.clone())
+            })
+            .context("no password prompt is available to install the update")?;
+        let delegate = AskPassDelegate::new_with_cancellation(
+            cx,
+            move |prompt_text, response_sender, cancellation, cx| {
+                prompt(prompt_text, response_sender, cancellation, cx)
+            },
+        );
+        let session = AskPassSession::new(cx.background_executor().clone(), delegate).await?;
+        Ok(Some(session))
+    }
+
     #[cfg_attr(test, allow(dead_code))]
     async fn install_release(
         installer_dir: InstallerDir,
         target_path: PathBuf,
         running_app_path: PathBuf,
         channel: &str,
+        askpass_script: Option<PathBuf>,
         background_executor: BackgroundExecutor,
     ) -> Result<Option<PathBuf>> {
         match OS {
@@ -950,7 +1091,14 @@ impl AutoUpdater {
                 .await
             }
             "linux" => {
-                install_release_linux(&installer_dir, &target_path, channel, running_app_path).await
+                install_release_linux(
+                    &installer_dir,
+                    &target_path,
+                    channel,
+                    running_app_path,
+                    askpass_script,
+                )
+                .await
             }
             "windows" => install_release_windows(&target_path).await,
             unsupported_os => anyhow::bail!("not supported: {unsupported_os}"),
@@ -961,10 +1109,21 @@ impl AutoUpdater {
         mut installed_version: Version,
         fetched_version: Version,
     ) -> Option<Version> {
-        // For non-nightly releases, ignore build and pre-release fields as they're not provided by our endpoints right now.
+        let installed_build_number = fork_build_number(&installed_version);
+        let fetched_build_number = fork_build_number(&fetched_version);
+        // Semver orders build metadata too, so it is compared separately: fork
+        // releases rebuild the same version with a higher run number.
         installed_version.pre = semver::Prerelease::EMPTY;
         installed_version.build = semver::BuildMetadata::EMPTY;
-        (fetched_version > installed_version).then_some(fetched_version)
+        let mut fetched_release = fetched_version.clone();
+        fetched_release.build = semver::BuildMetadata::EMPTY;
+        let is_newer = fetched_release > installed_version
+            || (fetched_release == installed_version
+                && matches!(
+                    (fetched_build_number, installed_build_number),
+                    (Some(fetched), Some(installed)) if fetched > installed
+                ));
+        is_newer.then_some(fetched_version)
     }
 
     pub fn set_should_show_update_notification(
@@ -1126,11 +1285,80 @@ async fn download_release(
     Ok(())
 }
 
+/// The prefix of an install made by `script/install-linux-release`, which
+/// places the editor in `$PREFIX/lib/zed/libexec/zed-editor`.
+fn linux_system_install_prefix(running_app_path: &Path) -> Option<PathBuf> {
+    // Once an update replaces the running binary, /proc/self/exe reports it as deleted.
+    let running_app_path = running_app_path.to_str()?.trim_end_matches(" (deleted)");
+    let running_app_path = Path::new(running_app_path);
+    if !running_app_path.is_absolute() || !running_app_path.ends_with("lib/zed/libexec/zed-editor")
+    {
+        return None;
+    }
+    running_app_path.ancestors().nth(4).map(Path::to_path_buf)
+}
+
+fn is_root() -> bool {
+    std::fs::read_to_string("/proc/self/status").is_ok_and(|status| {
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("Uid:"))
+            .and_then(|uids| uids.split_whitespace().nth(1))
+            == Some("0")
+    })
+}
+
+/// Installs the update the same way as a manual install: with the archive's
+/// own `install-linux-release`, which runs `sudo -A` once to replace the files
+/// under the system prefix, getting the password from Zed through askpass.
+async fn install_release_linux_system(
+    extracted: &Path,
+    downloaded_tar_gz: &Path,
+    prefix: &Path,
+    askpass_script: Option<PathBuf>,
+) -> Result<Option<PathBuf>> {
+    let install_script = extracted.join("zed.app").join("install-linux-release");
+    anyhow::ensure!(
+        fs::metadata(&install_script).await.is_ok(),
+        "the update archive has no installer; run install-zed-linux.sh from https://github.com/{FORK_RELEASE_REPOSITORY}/releases/latest",
+    );
+
+    let mut cmd = new_command("bash");
+    cmd.arg(&install_script)
+        .arg(downloaded_tar_gz)
+        .env("PREFIX", prefix);
+    match askpass_script {
+        Some(askpass_script) => {
+            cmd.env("SUDO", "sudo").env("SUDO_ASKPASS", askpass_script);
+        }
+        None => {
+            anyhow::ensure!(
+                is_root(),
+                "cannot ask for the password to install the update"
+            );
+            cmd.env("SUDO", "");
+        }
+    }
+    let output = cmd
+        .output()
+        .await
+        .with_context(|| format!("failed to run {}", install_script.display()))?;
+    anyhow::ensure!(
+        output.status.success(),
+        "failed to install the update into {}: {}",
+        prefix.display(),
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+
+    Ok(Some(prefix.join("lib/zed/libexec/zed-editor")))
+}
+
 async fn install_release_linux(
     temp_dir: &InstallerDir,
     downloaded_tar_gz: &Path,
     channel: &str,
     running_app_path: PathBuf,
+    askpass_script: Option<PathBuf>,
 ) -> Result<Option<PathBuf>> {
     let home_dir = PathBuf::from(env::var("HOME").context("no HOME env var set")?);
 
@@ -1156,6 +1384,16 @@ async fn install_release_linux(
         extracted,
         String::from_utf8_lossy(&output.stderr)
     );
+
+    if let Some(prefix) = linux_system_install_prefix(&running_app_path) {
+        return install_release_linux_system(
+            &extracted,
+            downloaded_tar_gz,
+            &prefix,
+            askpass_script,
+        )
+        .await;
+    }
 
     let suffix = if channel != "stable" {
         format!("-{}", channel)
@@ -1419,17 +1657,17 @@ mod tests {
                 let release_available = release_available.load(atomic::Ordering::Relaxed);
                 let dmg_rx = dmg_rx.clone();
                 async move {
-                if req.uri().path() == "/releases/stable/latest/asset" {
-                    if release_available {
-                        return Ok(Response::builder().status(200).body(
-                            r#"{"version":"0.100.1","url":"https://test.example/new-download"}"#.into()
-                        ).unwrap());
+                let asset = fork_release_asset_name(OS, ARCH).unwrap();
+                if req.uri().path() == format!("/{FORK_RELEASE_REPOSITORY}/releases/latest/download/release.json") {
+                    let (version, tag) = if release_available {
+                        ("0.100.1", "new")
                     } else {
-                        return Ok(Response::builder().status(200).body(
-                            r#"{"version":"0.100.0","url":"https://test.example/old-download"}"#.into()
-                        ).unwrap());
-                    }
-                } else if req.uri().path() == "/new-download" {
+                        ("0.100.0", "old")
+                    };
+                    return Ok(Response::builder().status(200).body(
+                        format!(r#"{{"version":"{version}","tag":"{tag}","assets":["{asset}"]}}"#).into()
+                    ).unwrap());
+                } else if req.uri().path() == format!("/{FORK_RELEASE_REPOSITORY}/releases/download/new/{asset}") {
                     return Ok(Response::builder().status(200).body({
                         let dmg_rx = dmg_rx.lock().take().unwrap();
                         dmg_rx.await.unwrap().into()
@@ -1696,6 +1934,49 @@ mod tests {
         );
 
         assert_eq!(newer_version.unwrap(), Some(fetched_version));
+    }
+
+    #[test]
+    fn test_stable_updates_to_a_higher_fork_build_of_the_same_version() {
+        let installed_version: Version = "1.28.0+stable.6.aaa".parse().unwrap();
+
+        let newer_version = AutoUpdater::check_if_fetched_version_is_newer_non_nightly(
+            installed_version.clone(),
+            "1.28.0+stable.7.bbb".parse().unwrap(),
+        );
+        assert_eq!(newer_version, Some("1.28.0+stable.7.bbb".parse().unwrap()));
+
+        let same_build = AutoUpdater::check_if_fetched_version_is_newer_non_nightly(
+            installed_version,
+            "1.28.0+stable.6.aaa".parse().unwrap(),
+        );
+        assert_eq!(same_build, None);
+
+        let local_build = AutoUpdater::check_if_fetched_version_is_newer_non_nightly(
+            "1.28.0+stable.ccc".parse().unwrap(),
+            "1.28.0+stable.7.bbb".parse().unwrap(),
+        );
+        assert_eq!(local_build, None);
+    }
+
+    #[test]
+    fn test_linux_system_install_prefix() {
+        assert_eq!(
+            linux_system_install_prefix(Path::new("/usr/lib/zed/libexec/zed-editor")),
+            Some(PathBuf::from("/usr"))
+        );
+        assert_eq!(
+            linux_system_install_prefix(Path::new("/opt/zed/lib/zed/libexec/zed-editor (deleted)")),
+            Some(PathBuf::from("/opt/zed"))
+        );
+        assert_eq!(
+            linux_system_install_prefix(Path::new("/home/user/.local/zed.app/libexec/zed-editor")),
+            None
+        );
+        assert_eq!(
+            linux_system_install_prefix(Path::new("/usr/lib/zed/zed-editor")),
+            None
+        );
     }
 
     #[test]
