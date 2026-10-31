@@ -1,6 +1,7 @@
 use auto_update::{AutoUpdater, release_notes_url};
 use db::kvp::Dismissable;
 use editor::{Editor, MultiBuffer};
+use git_ui_core::askpass_modal::AskPassModal;
 use gpui::{
     App, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, TaskExt, Window, actions,
     prelude::*,
@@ -15,7 +16,7 @@ use smol::io::AsyncReadExt;
 use ui::{AnnouncementToast, DeltaIllustration, ListBulletItem, prelude::*};
 use util::{ResultExt as _, maybe};
 use workspace::{
-    Workspace,
+    MultiWorkspace, Workspace,
     notifications::{
         Notification, NotificationId, SuppressEvent, show_app_notification,
         simple_message_notification::MessageNotification,
@@ -34,6 +35,39 @@ actions!(
 
 pub fn init(cx: &mut App) {
     notify_if_app_was_updated(cx);
+    auto_update::set_install_password_prompt(cx, |prompt, response_sender, cancellation, cx| {
+        cx.update(|cx| {
+            let Some(multi_workspace) = cx
+                .active_window()
+                .and_then(|window| window.downcast::<MultiWorkspace>())
+                .or_else(|| {
+                    cx.windows()
+                        .into_iter()
+                        .find_map(|window| window.downcast::<MultiWorkspace>())
+                })
+            else {
+                log::error!("no window to ask for the password to install the update");
+                return;
+            };
+            multi_workspace
+                .update(cx, |multi_workspace, window, cx| {
+                    window.activate_window();
+                    multi_workspace.workspace().update(cx, |workspace, cx| {
+                        workspace.toggle_modal(window, cx, |window, cx| {
+                            AskPassModal::new(
+                                "Install Zed update".into(),
+                                prompt.into(),
+                                response_sender,
+                                cancellation,
+                                window,
+                                cx,
+                            )
+                        });
+                    });
+                })
+                .log_err();
+        });
+    });
     cx.observe_new(|workspace: &mut Workspace, _window, cx| {
         workspace.register_action(|workspace, _: &ViewReleaseNotesLocally, window, cx| {
             view_release_notes_locally(workspace, window, cx);

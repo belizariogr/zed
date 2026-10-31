@@ -42,13 +42,47 @@ Customizations implemented in this fork:
 
 ---
 
-### Installation (upstream)
+## Installing this repack
 
-On macOS, Linux, and Windows you can [download Zed directly](https://zed.dev/download) or install Zed via your local package manager ([macOS](https://zed.dev/docs/installation#macos)/[Linux](https://zed.dev/docs/linux#installing-via-a-package-manager)/[Windows](https://zed.dev/docs/windows#package-managers)).
+Every link below always points to the [latest release](https://github.com/belizariogr/zed/releases/latest). Once installed, Zed updates itself from this repository's releases (unless `"auto_update": false` is set).
 
-For this fork, prefer the scripts above to install the customized build.
+### macOS
 
-Other platforms are not yet available:
+Download the disk image for your Mac, open it and drag Zed to Applications:
+
+- Apple Silicon: [Zed-aarch64.dmg](https://github.com/belizariogr/zed/releases/latest/download/Zed-aarch64.dmg)
+- Intel: [Zed-x86_64.dmg](https://github.com/belizariogr/zed/releases/latest/download/Zed-x86_64.dmg)
+
+The app is signed and notarized.
+
+### Linux (x86_64 and aarch64)
+
+```sh
+curl -fsSL https://github.com/belizariogr/zed/releases/latest/download/install-zed-linux.sh | bash
+```
+
+This installs Zed system-wide (`/usr/bin/zed`, `/usr/lib/zed`, desktop entry and icons) using `sudo`, plus the matching remote development server in `~/.zed_server`. To install updates, Zed asks for your `sudo` password in its own window.
+
+### Windows (x64 and ARM64)
+
+Download and run the installer:
+
+- x64: [Zed-x86_64.exe](https://github.com/belizariogr/zed/releases/latest/download/Zed-x86_64.exe)
+- ARM64: [Zed-aarch64.exe](https://github.com/belizariogr/zed/releases/latest/download/Zed-aarch64.exe)
+
+The installer is not code signed, so SmartScreen asks for confirmation (**More info** > **Run anyway**). From PowerShell:
+
+```powershell
+$installer = "$env:TEMP\Zed-x86_64.exe"; Invoke-WebRequest https://github.com/belizariogr/zed/releases/latest/download/Zed-x86_64.exe -OutFile $installer; Start-Process $installer
+```
+
+### Building from source
+
+`script/install-macos` and `script/install-linux-system` (see above) build and install the current checkout instead. Those builds do not update themselves.
+
+### Upstream Zed
+
+The official Zed builds are available from [zed.dev/download](https://zed.dev/download) or your package manager ([macOS](https://zed.dev/docs/installation#macos)/[Linux](https://zed.dev/docs/linux#installing-via-a-package-manager)/[Windows](https://zed.dev/docs/windows#package-managers)). Other platforms are not yet available:
 
 - Web ([tracking discussion](https://github.com/zed-industries/zed/discussions/26195))
 

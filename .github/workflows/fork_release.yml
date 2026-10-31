@@ -1,10 +1,43 @@
-# Builds this fork for macOS (signed and notarized DMG) and Linux (archive
-# installed with script/install-linux-release), then publishes a GitHub release.
+# Builds this fork for macOS (signed and notarized DMG), Linux (archive
+# installed with script/install-linux-release) and Windows (installer), then
+# publishes a GitHub release with the release.json the auto-updater reads.
 name: Fork release
 on:
   workflow_dispatch:
     inputs:
-      publish:
+      bundle_windows:
+    if: github.repository == 'belizariogr/zed'
+    name: Windows (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+        - x86_64
+        - aarch64
+    # windows-2022 has Inno Setup and the Windows 10.0.26100 SDK that
+    # script/bundle-windows.ps1 uses. The aarch64 build cross-compiles.
+    runs-on: windows-2022
+    timeout-minutes: 360
+    steps:
+    - name: Enable long paths
+      run: git config --system core.longpaths true
+    - name: Checkout
+      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+    - name: Use the stable release channel
+      shell: bash
+      run: echo stable > crates/zed/RELEASE_CHANNEL
+    # Unsigned: script/bundle-windows.ps1 skips signing without the Azure signing secrets.
+    - name: Bundle
+      shell: pwsh
+      run: script/bundle-windows.ps1 -Architecture ${{ matrix.arch }}
+    - name: Upload installer
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: Zed-${{ matrix.arch }}.exe
+        path: target/Zed-${{ matrix.arch }}.exe
+        if-no-files-found: error
+
+  publish:
         description: Publish a GitHub release with the builds
         type: boolean
         default: true
@@ -20,8 +53,6 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: '1'
-  # Stable builds would otherwise replace this fork with the official Zed release.
-  ZED_UPDATE_EXPLANATION: Install new versions from https://github.com/belizariogr/zed/releases
 jobs:
   bundle_mac:
     if: github.repository == 'belizariogr/zed'
@@ -156,6 +187,8 @@ jobs:
         chmod 755 "$stage/zed.app/remote-server"
         # Matches AppVersion::load(): the build id and commit come from GITHUB_RUN_NUMBER and HEAD.
         echo "${version}+stable.${GITHUB_RUN_NUMBER}.$(git rev-parse HEAD)" >"$stage/zed.app/remote-server-version"
+        # The auto-updater installs the archive with its own copy of the script.
+        install -m755 script/install-linux-release "$stage/zed.app/install-linux-release"
         tar -czf "dist/zed-linux-${{ matrix.arch }}.tar.gz" -C "$stage" zed.app
     - name: Upload archive
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -170,6 +203,7 @@ jobs:
     needs:
     - bundle_mac
     - bundle_linux
+    - bundle_windows
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -186,17 +220,21 @@ jobs:
         GH_TOKEN: ${{ github.token }}
       run: |
         version="$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/zed/Cargo.toml | head -n 1)"
+        # Rebuilds of a version replace its release; the auto-updater tells them
+        # apart by the run number in the build metadata.
         if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
           tag="$GITHUB_REF_NAME"
         else
-          tag="fork-v${version}-${GITHUB_RUN_NUMBER}"
+          tag="fork-v${version}"
         fi
 
         files=()
+        assets=()
         missing=()
-        for asset in Zed-aarch64.dmg Zed-x86_64.dmg zed-linux-x86_64.tar.gz zed-linux-aarch64.tar.gz; do
+        for asset in Zed-aarch64.dmg Zed-x86_64.dmg zed-linux-x86_64.tar.gz zed-linux-aarch64.tar.gz Zed-x86_64.exe Zed-aarch64.exe; do
           if [[ -f "artifacts/${asset}" ]]; then
             files+=("artifacts/${asset}")
+            assets+=("${asset}")
           else
             missing+=("${asset}")
           fi
@@ -207,7 +245,7 @@ jobs:
         fi
 
         notes="$RUNNER_TEMP/notes.md"
-        echo "Zed ${version} (fork build ${GITHUB_RUN_NUMBER}, ${GITHUB_SHA})" >"$notes"
+        echo "Build ${GITHUB_RUN_NUMBER} of ${GITHUB_SHA}" >"$notes"
         echo >>"$notes"
         if [[ -f artifacts/Zed-aarch64.dmg || -f artifacts/Zed-x86_64.dmg ]]; then
           echo "- macOS: open \`Zed-aarch64.dmg\` (Apple Silicon) or \`Zed-x86_64.dmg\` (Intel) and drag Zed to Applications." >>"$notes"
@@ -217,16 +255,38 @@ jobs:
           files+=(artifacts/install-zed-linux.sh)
           echo "- Linux: \`curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/install-zed-linux.sh | ZED_RELEASE_TAG=${tag} bash\`" >>"$notes"
         fi
+        if [[ -f artifacts/Zed-x86_64.exe || -f artifacts/Zed-aarch64.exe ]]; then
+          echo "- Windows: run \`Zed-x86_64.exe\` (x64) or \`Zed-aarch64.exe\` (ARM64). The installer is not code signed, so SmartScreen asks for confirmation (More info > Run anyway)." >>"$notes"
+        fi
         if ((${#missing[@]} > 0)); then
           echo >>"$notes"
           echo "Not included because the build failed: ${missing[*]}" >>"$notes"
           echo "::warning::Publishing without ${missing[*]}"
         fi
 
+        # Read by crates/auto_update from releases/latest/download/release.json.
+        # The version matches AppVersion::load() for this run's builds.
+        jq -n \
+          --arg version "${version}+stable.${GITHUB_RUN_NUMBER}.${GITHUB_SHA}" \
+          --arg tag "$tag" \
+          '{version: $version, tag: $tag, assets: $ARGS.positional}' \
+          --args "${assets[@]}" >artifacts/release.json
+        files+=(artifacts/release.json)
+
+        if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          echo "Replacing the existing ${tag} release"
+          # For tag pushes this also deletes the pushed tag; it is recreated
+          # below at the same commit.
+          gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+        elif [[ "$GITHUB_EVENT_NAME" != "push" ]] && gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; then
+          echo "Deleting the ${tag} tag left without a release"
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}"
+        fi
+
         gh release create "$tag" \
           --repo "$GITHUB_REPOSITORY" \
           --target "$GITHUB_SHA" \
-          --title "Zed ${version} (fork ${GITHUB_RUN_NUMBER})" \
+          --title "Zed ${version}" \
           --notes-file "$notes" \
           --latest \
           "${files[@]}"

@@ -1388,6 +1388,7 @@ name = "auto_update"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "askpass",
  "client",
  "clock",
  "ctor",
@@ -1434,7 +1435,9 @@ dependencies = [
  "client",
  "db",
  "editor",
+ "git_ui_core",
  "gpui",
+ "log",
  "markdown_preview",
  "project",
  "release_channel",
