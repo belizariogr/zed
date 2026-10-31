@@ -5,39 +5,7 @@ name: Fork release
 on:
   workflow_dispatch:
     inputs:
-      bundle_windows:
-    if: github.repository == 'belizariogr/zed'
-    name: Windows (${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        arch:
-        - x86_64
-        - aarch64
-    # windows-2022 has Inno Setup and the Windows 10.0.26100 SDK that
-    # script/bundle-windows.ps1 uses. The aarch64 build cross-compiles.
-    runs-on: windows-2022
-    timeout-minutes: 360
-    steps:
-    - name: Enable long paths
-      run: git config --system core.longpaths true
-    - name: Checkout
-      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
-    - name: Use the stable release channel
-      shell: bash
-      run: echo stable > crates/zed/RELEASE_CHANNEL
-    # Unsigned: script/bundle-windows.ps1 skips signing without the Azure signing secrets.
-    - name: Bundle
-      shell: pwsh
-      run: script/bundle-windows.ps1 -Architecture ${{ matrix.arch }}
-    - name: Upload installer
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: Zed-${{ matrix.arch }}.exe
-        path: target/Zed-${{ matrix.arch }}.exe
-        if-no-files-found: error
-
-  publish:
+      publish:
         description: Publish a GitHub release with the builds
         type: boolean
         default: true
@@ -195,6 +163,38 @@ jobs:
       with:
         name: zed-linux-${{ matrix.arch }}.tar.gz
         path: dist/zed-linux-${{ matrix.arch }}.tar.gz
+        if-no-files-found: error
+
+  bundle_windows:
+    if: github.repository == 'belizariogr/zed'
+    name: Windows (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+        - x86_64
+        - aarch64
+    # windows-2022 has Inno Setup and the Windows 10.0.26100 SDK that
+    # script/bundle-windows.ps1 uses. The aarch64 build cross-compiles.
+    runs-on: windows-2022
+    timeout-minutes: 360
+    steps:
+    - name: Enable long paths
+      run: git config --system core.longpaths true
+    - name: Checkout
+      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+    - name: Use the stable release channel
+      shell: bash
+      run: echo stable > crates/zed/RELEASE_CHANNEL
+    # Unsigned: script/bundle-windows.ps1 skips signing without the Azure signing secrets.
+    - name: Bundle
+      shell: pwsh
+      run: script/bundle-windows.ps1 -Architecture ${{ matrix.arch }}
+    - name: Upload installer
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: Zed-${{ matrix.arch }}.exe
+        path: target/Zed-${{ matrix.arch }}.exe
         if-no-files-found: error
 
   publish:
