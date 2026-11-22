@@ -192,6 +192,8 @@ Rules emerge from validated patterns, not one-off observations. The workflow is:
 
 This fork (`belizariogr/zed`) carries personal source customizations on top of upstream Zed (and syncs such as from Zelle's fork).
 
+**HARD RULE — NEVER OPEN PRs AGAINST UPSTREAM (`zed-industries/zed`):** Never create pull requests against the upstream repository (`zed-industries/zed`) from this fork unless the user explicitly asks to contribute upstream. GitHub CLI (`gh pr create` without `--repo`) and PR helper tools (such as `pull_request_create`, which has no `repository` parameter) default to the upstream parent repository on forks — **do not use them** without explicitly targeting `belizariogr/zed` (for example, `gh pr create --repo belizariogr/zed --base main`).
+
 **HARD RULE:** Whenever this fork is updated from upstream (or any other remote), you **must** keep the personalization commits below working. Do not drop them, overwrite them silently, or leave them broken after a merge/rebase. After every sync:
 
 1. Ensure each personalization still exists in the tree (or is cleanly re-applied if rewritten).
